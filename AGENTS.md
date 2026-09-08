@@ -30,7 +30,7 @@ bash tools/e2e.sh                             # 需先起 server；自动清理�
 - **设备协议**：改 `server/ws/` 或 `android/ws/WsClient.java` 前先读 `docs/protocol.md`。原生 WebSocket `/ws/device`，信封 `{type,msgId,ts,data}`；设备收 `CMD_*` 必须回 `ACK`；离线指令走 Redis 待发队列（Redis 不可用时自动降级跳过补发）；心跳 90s 超时判离线。协议是云端与设备端的双向契约，两端必须同步改。
 - **Rhino 沙箱**：`android/api/`（AutoApi/NodeApi/ImageApi 等暴露给脚本的 JS API）改动必须同步更新 `docs/script-development.md`（手册声明与源码一一对应）。`SandboxShutter` 用 ClassShutter 禁 `java.*`（含反射逃逸），不得为绕限制放开。
 - **server 分层**：controller（返回 `common/R.java`，code=0 成功）→ service → mapper（MyBatis-Plus）。业务异常抛 `ApiException`，由 `GlobalExceptionHandler` 统一转 R。SQL 全参数化，不走拼接。
-- **鉴权三套**：管理端 JWT（`JwtInterceptor`）、设备端 deviceSn+secret 握手（`DeviceAuthInterceptor`，失败 close 4001）、开放 API `/open/v1/**` 用 `X-API-Token`（`ApiTokenInterceptor`，库存 SHA-256 哈希）。密钥/密码不明文落库。
+- **鉴权三套**：管理端 JWT（`JwtInterceptor`）、设备端 deviceSn+secret（WS 握手 `DeviceHandshakeInterceptor`、脚本下载 `DeviceAuthInterceptor`，失败均 HTTP 401 拒绝——设备端识别 401/403 后停止重连）、开放 API `/open/v1/**` 用 `X-API-Token`（`ApiTokenInterceptor`，库存 SHA-256 哈希）。密钥/密码不明文落库。
 - **web 数据流**：`src/api/http.ts` 已解包 `{code,msg,data}` 并直接返回 `data`，401 时统一登出且必须 `disconnectStomp()`（否则旧 token 每 5s 重连风暴——已处理，勿绕过该封装直接用 axios）。实时推送走 `src/ws/stomp.ts`（带重连补订）。
 
 ## 关键约束与坑

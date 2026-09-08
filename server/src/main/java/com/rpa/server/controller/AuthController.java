@@ -2,6 +2,7 @@ package com.rpa.server.controller;
 
 import com.rpa.server.common.R;
 import com.rpa.server.service.AuthService;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -40,7 +41,7 @@ public class AuthController {
         return R.ok();
     }
 
-    @RequestMapping("/me")
+    @GetMapping("/me")
     public R<Object> me(@RequestAttribute("adminId") Long adminId) {
         var user = authService.byId(adminId);
         return R.ok(Map.of(

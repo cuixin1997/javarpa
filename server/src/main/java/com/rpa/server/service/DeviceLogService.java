@@ -2,6 +2,7 @@ package com.rpa.server.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.rpa.server.common.Strings;
 import com.rpa.server.entity.DeviceLog;
 import com.rpa.server.mapper.DeviceLogMapper;
 import com.rpa.server.ws.AdminStompService;
@@ -44,13 +45,13 @@ public class DeviceLogService {
         DeviceLog entry = new DeviceLog();
         entry.deviceId = deviceId;
         entry.taskId = parseTaskId(data.get("taskId"));
-        entry.level = data.get("level") == null ? "INFO" : String.valueOf(data.get("level"));
-        entry.tag = data.get("tag") == null ? null : String.valueOf(data.get("tag"));
-        entry.content = data.get("content") == null ? null : String.valueOf(data.get("content"));
-        if (entry.content != null && entry.content.length() > 2000) {
-            entry.content = entry.content.substring(0, 2000);
-        }
-        entry.logTime = LocalDateTime.now();
+        entry.level = Strings.truncate(
+                data.get("level") == null ? "INFO" : String.valueOf(data.get("level")), 8);
+        entry.tag = Strings.truncate(
+                data.get("tag") == null ? null : String.valueOf(data.get("tag")), 64);
+        entry.content = Strings.truncate(
+                data.get("content") == null ? null : String.valueOf(data.get("content")), 2000);
+        entry.logTime = deviceLogTime(data.get("logTime"));
         // 高频日志走异步线程落库，避免拖慢 WS 消息处理
         logExecutor.execute(() -> {
             try {
@@ -68,6 +69,22 @@ public class DeviceLogService {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    /** 优先采用设备上报的 logTime（协议字段，毫秒；兼容秒级），缺失/非法时退回服务器接收时间 */
+    private static LocalDateTime deviceLogTime(Object v) {
+        Long ts = null;
+        if (v instanceof Number n) {
+            ts = n.longValue();
+        } else if (v != null) {
+            try {
+                ts = Long.parseLong(String.valueOf(v));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        if (ts == null || ts <= 0) return LocalDateTime.now();
+        long millis = ts < 10_000_000_000L ? ts * 1000 : ts;
+        return LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(millis), java.time.ZoneId.systemDefault());
     }
 
     public Map<String, Object> page(Long deviceId, Long taskId, String level, int page, int size) {

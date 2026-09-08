@@ -20,7 +20,7 @@
 - `X-Device-Id`: 设备编号（云端预分配的 deviceSn）
 - `X-Device-Secret`: 设备密钥
 
-鉴权失败服务端直接关闭连接（close code 4001）。
+鉴权失败时 HTTP 握手直接返回 401，连接不建立（设备端在 onFailure 中识别 401/403 后停止重连）。close code 4001 仅用于设备侧主动关闭（如 REGISTER 被拒时设备自行断开）。
 
 ## 设备 → 云端
 

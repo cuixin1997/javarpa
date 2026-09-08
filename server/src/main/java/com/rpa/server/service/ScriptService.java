@@ -285,7 +285,19 @@ public class ScriptService {
                 Files.deleteIfExists(tmp);
                 throw e;
             }
-            atomicMove(tmp, target);
+            try {
+                atomicMove(tmp, target);
+            } catch (IOException moveError) {
+                // DB 记录已插入而 zip 缺失 = 僵尸版本：发布后设备下载 404，且占用唯一版本号导致无法重传
+                try {
+                    versionMapper.delete(new QueryWrapper<ScriptVersion>()
+                            .eq("script_id", scriptId).eq("version_code", vc));
+                } catch (Exception cleanupError) {
+                    log.error("cleanup zombie version {}/v{} failed, manual DB fix needed",
+                            scriptId, vc, cleanupError);
+                }
+                throw moveError;
+            }
             return v;
         } catch (ApiException e) {
             deleteQuietly(tmp);

@@ -32,7 +32,7 @@ public class DeviceController {
         this.deviceDebugService = deviceDebugService;
     }
 
-    @RequestMapping("/page")
+    @GetMapping("/page")
     public R<Map<String, Object>> page(@RequestParam(required = false) String keyword,
                                        @RequestParam(required = false) Long groupId,
                                        @RequestParam(required = false) Integer online,

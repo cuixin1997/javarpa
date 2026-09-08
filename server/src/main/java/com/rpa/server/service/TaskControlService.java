@@ -3,6 +3,7 @@ package com.rpa.server.service;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.rpa.server.common.ApiException;
+import com.rpa.server.common.Strings;
 import com.rpa.server.entity.Device;
 import com.rpa.server.entity.Script;
 import com.rpa.server.entity.ScriptVersion;
@@ -208,7 +209,8 @@ public class TaskControlService {
             exec.status = status;
             exec.successCount = successCount;
             exec.failCount = failCount;
-            exec.errorMsg = str(data.get("errorMsg"));
+            // 列宽 1000：设备端/脚本侧不保证长度，超长插入失败会连锁丢执行记录并中断重试
+            exec.errorMsg = Strings.truncate(str(data.get("errorMsg")), 1000);
             exec.durationMs = parseDuration(data.get("duration"));
             executionMapper.insert(exec);
         }
