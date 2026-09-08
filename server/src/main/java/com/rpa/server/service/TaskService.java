@@ -169,7 +169,10 @@ public class TaskService {
         List<Task> tasks = taskMapper.selectList(new QueryWrapper<Task>().orderByDesc("id"));
         Map<Long, String> scriptNames = new HashMap<>();
         scriptService.list().forEach(s -> scriptNames.put(s.id, s.name));
+        // 单条 GROUP BY 聚合替代每任务两次 count，任务量增长后不再放大查询数
+        Map<Long, long[]> counts = taskDeviceCounts();
         return tasks.stream().map(t -> {
+            long[] c = counts.getOrDefault(t.id, new long[2]);
             Map<String, Object> m = new HashMap<>();
             m.put("id", t.id);
             m.put("name", t.name);
@@ -182,12 +185,24 @@ public class TaskService {
             m.put("maxRetries", t.maxRetries);
             m.put("status", t.status);
             m.put("createdAt", t.createdAt);
-            m.put("deviceCount", taskDeviceMapper.selectCount(
-                    new QueryWrapper<TaskDevice>().eq("task_id", t.id)));
-            m.put("runningCount", taskDeviceMapper.selectCount(
-                    new QueryWrapper<TaskDevice>().eq("task_id", t.id).eq("status", "RUNNING")));
+            m.put("deviceCount", c[0]);
+            m.put("runningCount", c[1]);
             return m;
         }).toList();
+    }
+
+    /** taskId -> [设备数, RUNNING 数]，一条 SQL 完成全部任务的统计。 */
+    private Map<Long, long[]> taskDeviceCounts() {
+        List<Map<String, Object>> rows = taskDeviceMapper.selectMaps(new QueryWrapper<TaskDevice>()
+                .select("task_id", "COUNT(*) AS total", "SUM(status = 'RUNNING') AS running")
+                .groupBy("task_id"));
+        Map<Long, long[]> counts = new HashMap<>();
+        for (Map<String, Object> row : rows) {
+            counts.put(((Number) row.get("task_id")).longValue(), new long[]{
+                    ((Number) row.get("total")).longValue(),
+                    row.get("running") == null ? 0L : ((Number) row.get("running")).longValue()});
+        }
+        return counts;
     }
 
     public Task require(long id) {

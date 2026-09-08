@@ -114,4 +114,65 @@ class AuthServiceTest {
                 () -> restarted.assertTokenFresh(1L, System.currentTimeMillis() - 5000));
         assertEquals(401, ex.getCode());
     }
+
+    // ---------- 内存兜底计数：窗口/锁定语义（accumulate/stale 为纯函数，时间可控） ----------
+
+    private static final long LOCK = 15 * 60_000L;
+
+    @Test
+    void fiveFailuresWithinWindowLock() {
+        long now = 1_000_000L;
+        AuthService.LoginState state = null;
+        for (int i = 0; i < 5; i++) {
+            state = AuthService.accumulate(state, now + i);
+        }
+        assertEquals(5, state.count());
+        assertEquals(now + 4 + LOCK, state.lockedUntil());
+    }
+
+    @Test
+    void staleWindowResetsCountNotInstantlyRelock() {
+        // 锁过期后（窗口外再失败）：计数归 1，不得一次失败立即重锁
+        long old = 1_000_000L;
+        AuthService.LoginState locked = new AuthService.LoginState(5, old + LOCK, old);
+        AuthService.LoginState next = AuthService.accumulate(locked, old + LOCK + 1);
+        assertEquals(1, next.count());
+        assertEquals(0, next.lockedUntil());
+    }
+
+    @Test
+    void unexpiredLockSurvivesFurtherFailures() {
+        long now = 1_000_000L;
+        AuthService.LoginState locked = new AuthService.LoginState(5, now + LOCK, now);
+        AuthService.LoginState next = AuthService.accumulate(locked, now + 1000);
+        assertEquals(now + LOCK, next.lockedUntil());
+    }
+
+    @Test
+    void staleEntryCleanableOnlyWhenLockGoneAndWindowPassed() {
+        long now = 1_000_000L;
+        // 有锁未过期：不清理
+        org.junit.jupiter.api.Assertions.assertFalse(
+                AuthService.stale(new AuthService.LoginState(5, now + LOCK, now), now));
+        // 无锁但窗口内仍可能有新失败要累计：不清理
+        org.junit.jupiter.api.Assertions.assertFalse(
+                AuthService.stale(new AuthService.LoginState(2, 0, now - LOCK + 1000), now));
+        // 无锁且超过一个窗口没有新失败：清理
+        org.junit.jupiter.api.Assertions.assertTrue(
+                AuthService.stale(new AuthService.LoginState(2, 0, now - LOCK), now));
+    }
+
+    @Test
+    void cleanupSweepKeepsLockedEntry() {
+        // 走内存分支触发 5 次失败 -> entry 落入兜底 map
+        when(adminUserMapper.selectOne(any(QueryWrapper.class))).thenReturn(user());
+        for (int i = 0; i < 5; i++) {
+            assertThrows(ApiException.class, () -> authService.login("admin", "wrong", "9.9.9.9"));
+        }
+        // 仍在锁定期：清扫不应移除
+        authService.cleanupStaleLoginStates();
+        ApiException locked = assertThrows(ApiException.class,
+                () -> authService.login("admin", "right-pass", "9.9.9.9"));
+        assertEquals(429, locked.getCode());
+    }
 }

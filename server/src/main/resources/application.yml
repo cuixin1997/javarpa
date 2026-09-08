@@ -43,6 +43,8 @@ rpa:
   heartbeat-timeout-seconds: 90
   offline-scan-seconds: 30
   log-retention-days: 30
+  # Redis 故障降级期间登录失败内存计数的清理周期
+  login-state-clean-seconds: 300
 
 springdoc:
   swagger-ui:

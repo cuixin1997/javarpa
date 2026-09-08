@@ -35,12 +35,13 @@ public class AuthService {
     private final StringRedisTemplate redisTemplate;
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
     private final JwtUtil jwtUtil;
-    // Redis 不可用时的内存兜底：ip:user -> [失败次数, 锁定截止时间]
+    // Redis 不可用时的内存兜底：ip:user -> 失败计数（含锁定截止与最后失败时间）
     private final Map<String, LoginState> loginFailures = new ConcurrentHashMap<>();
     // adminId -> 最近一次改密时间（读穿缓存，真源在 admin_token_state 表）
     private final Map<Long, Long> passwordChangedAt = new ConcurrentHashMap<>();
 
-    private record LoginState(int count, long lockedUntil) {}
+    /** 包私有便于单测；lastFailAt 用于失败计数窗口判定与过期清理。 */
+    record LoginState(int count, long lockedUntil, long lastFailAt) {}
 
     public AuthService(AdminUserMapper adminUserMapper, ApiTokenMapper apiTokenMapper,
                        JwtUtil jwtUtil) {
@@ -127,12 +128,33 @@ public class AuthService {
                 // 降级到内存计数
             }
         }
-        LoginState state = loginFailures.compute(username + "@" + clientIp, (k, old) ->
-                new LoginState((old == null ? 0 : old.count()) + 1, old != null ? old.lockedUntil() : 0));
-        if (state.count() >= MAX_LOGIN_FAILURES) {
-            loginFailures.put(username + "@" + clientIp,
-                    new LoginState(state.count(), now + LOGIN_LOCK_MILLIS));
+        loginFailures.compute(username + "@" + clientIp, (k, old) -> accumulate(old, now));
+    }
+
+    /** 内存兜底的状态推进（包私有便于单测）：失败计数与锁定均只在本窗口内有效，
+     *  语义对齐 Redis 分支的 INCR+EXPIRE —— 窗口外的旧失败不累计，锁过期后须重新数满阈值；
+     *  未过期的锁保持原截止时间不顺延（登录入口有 isLocked 前置拦截，此处仅为纯函数兜底）。 */
+    static LoginState accumulate(LoginState old, long now) {
+        int count = 1;
+        long lockedUntil = 0;
+        if (old != null) {
+            if (now - old.lastFailAt() < LOGIN_LOCK_MILLIS) count = old.count() + 1;
+            if (old.lockedUntil() > now) lockedUntil = old.lockedUntil();
         }
+        if (lockedUntil == 0 && count >= MAX_LOGIN_FAILURES) lockedUntil = now + LOGIN_LOCK_MILLIS;
+        return new LoginState(count, lockedUntil, now);
+    }
+
+    /** 久无失败且无锁的条目可清理，防降级期间被持续爆破缓慢积累。 */
+    static boolean stale(LoginState state, long now) {
+        return state.lockedUntil() <= now && now - state.lastFailAt() >= LOGIN_LOCK_MILLIS;
+    }
+
+    /** 兜底计数不落 Redis，降级期间写入的条目在 Redis 恢复后也无人清理，需周期清扫。 */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelayString = "${rpa.login-state-clean-seconds:300}s")
+    public void cleanupStaleLoginStates() {
+        long now = System.currentTimeMillis();
+        loginFailures.entrySet().removeIf(e -> stale(e.getValue(), now));
     }
 
     private void clearLoginFailures(String username, String clientIp) {
