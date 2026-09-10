@@ -186,6 +186,9 @@ public class WsClient implements TaskExecutor.Reporter {
                 case "CMD_CAPTURE":
                     debugExecutor.execute(() -> handleCapture(msgId));
                     break;
+                case "CMD_TAP":
+                    debugExecutor.execute(() -> handleTap(msgId, payload));
+                    break;
                 default:
                     break;
             }
@@ -241,6 +244,26 @@ public class WsClient implements TaskExecutor.Reporter {
             cap.put("refMsgId", msgId);
             send("CAPTURE", cap);
             ack(msgId, true, null);
+        } catch (Exception e) {
+            ack(msgId, false, e.getMessage());
+        }
+    }
+
+    /** 调试指令：远程点击（网页端 UI 检查器遥控模式），派发无障碍手势，仅 ACK 无上行数据。 */
+    private void handleTap(String msgId, JSONObject data) {
+        try {
+            if (!AutoAccessibilityService.isRunning()) {
+                ack(msgId, false, "无障碍服务未开启");
+                return;
+            }
+            int x = data.optInt("x", -1);
+            int y = data.optInt("y", -1);
+            if (x < 0 || y < 0) {
+                ack(msgId, false, "点击坐标不合法");
+                return;
+            }
+            boolean ok = UiOperator.tap(x, y);
+            ack(msgId, ok, ok ? null : "点击手势派发失败");
         } catch (Exception e) {
             ack(msgId, false, e.getMessage());
         }

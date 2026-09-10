@@ -47,11 +47,12 @@
 | CMD_UPDATE_SCRIPT | scriptId, versionCode, url, sha256 | 热更新脚本包 |
 | CMD_DUMP_UI | （无额外字段） | 请求设备上报当前完整控件树（云端 UI 检查器用；结果走 DUMP_UI 上行，不进离线补发队列） |
 | CMD_CAPTURE | （无额外字段） | 请求设备上报当前屏幕截图（结果走 CAPTURE 上行，不进离线补发队列；设备需 Android 11+ 且无障碍服务运行中） |
+| CMD_TAP | x, y（屏幕绝对像素） | 远程点击：设备在指定坐标派发无障碍点击手势（网页端 UI 检查器"遥控模式"用；仅回 ACK 无上行数据，不进离线补发队列） |
 
 ## 指令可靠性
 
 - 设备收到 CMD_* 后必须回 ACK（ok=false 时带 error 说明）。
-- 设备离线期间的指令存入云端待发队列，设备 REGISTER 后按序补发；**调试类指令（CMD_DUMP_UI/CMD_CAPTURE）例外**——实时性优先，设备不在线时云端直接报错，不入队补发。
+- 设备离线期间的指令存入云端待发队列，设备 REGISTER 后按序补发；**调试类指令（CMD_DUMP_UI/CMD_CAPTURE/CMD_TAP）例外**——实时性优先，设备不在线时云端直接报错，不入队补发。
 - HEARTBEAT 超过 90s 未收到，云端判定设备离线。
 
 ## 大 payload 约定

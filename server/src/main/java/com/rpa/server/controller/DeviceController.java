@@ -91,10 +91,11 @@ public class DeviceController {
         return R.ok();
     }
 
-    /** 触发设备 UI 树/截图调试上报（kind=dump|capture），结果经 STOMP /topic/device/{id}/debug 推送。 */
+    /** 触发设备调试操作（kind=dump|capture|tap）：dump/capture 结果经 STOMP /topic/device/{id}/debug 推送；tap 携带可选 body {x, y} 为远程点击。 */
     @PostMapping("/{id}/debug/{kind}")
-    public R<Void> debugTrigger(@PathVariable long id, @PathVariable String kind) {
-        deviceDebugService.request(id, kind);
+    public R<Void> debugTrigger(@PathVariable long id, @PathVariable String kind,
+                                @RequestBody(required = false) Map<String, Object> body) {
+        deviceDebugService.request(id, kind, body);
         return R.ok();
     }
 

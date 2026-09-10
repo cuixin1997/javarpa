@@ -10,14 +10,15 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 设备调试通道（云端 UI 检查器）：下发 CMD_DUMP_UI/CMD_CAPTURE，
+ * 设备调试通道（云端 UI 检查器）：下发 CMD_DUMP_UI/CMD_CAPTURE/CMD_TAP，
  * 接收设备 DUMP_UI/CAPTURE 上行，缓存最近一份并经 STOMP 实时推送。
  */
 @Service
 public class DeviceDebugService {
     private static final Map<String, String> KIND_TO_CMD = Map.of(
             "dump", "CMD_DUMP_UI",
-            "capture", "CMD_CAPTURE");
+            "capture", "CMD_CAPTURE",
+            "tap", "CMD_TAP");
 
     private final DeviceSessionManager sessionManager;
     private final AdminStompService stomp;
@@ -31,11 +32,19 @@ public class DeviceDebugService {
         this.stomp = stomp;
     }
 
-    /** 触发设备上报 UI 树/截图；调试指令不进离线队列，设备必须在线。 */
-    public void request(long deviceId, String kind) {
+    /** 触发设备调试操作（dump/capture 需设备上报，tap 为远程点击仅 ACK）；调试指令不进离线队列，设备必须在线。 */
+    public void request(long deviceId, String kind, Map<String, Object> data) {
         String cmd = KIND_TO_CMD.get(kind);
         if (cmd == null) throw new ApiException("不支持的操作: " + kind);
-        if (!sessionManager.send(String.valueOf(deviceId), WsMessage.of(cmd, Map.of()))) {
+        Map<String, Object> payload = data == null ? Map.of() : data;
+        if ("tap".equals(kind)) {
+            Object x = payload.get("x"), y = payload.get("y");
+            if (!(x instanceof Number) || !(y instanceof Number)
+                    || ((Number) x).doubleValue() < 0 || ((Number) y).doubleValue() < 0) {
+                throw new ApiException("tap 坐标不合法，需要非负数值 x/y");
+            }
+        }
+        if (!sessionManager.send(String.valueOf(deviceId), WsMessage.of(cmd, payload))) {
             throw new ApiException(409, "设备不在线，调试指令需设备实时在线");
         }
     }

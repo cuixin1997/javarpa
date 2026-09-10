@@ -117,26 +117,65 @@
         <span v-if="editorBase > 0" style="color: #909399; font-size: 12px">
           基于 v{{ editorBase }} 修改，保存后将生成新 zip 版本
         </span>
+        <el-button
+          size="small" plain :type="inspectorOpen ? 'primary' : 'default'" :icon="Aim"
+          @click="toggleInspector"
+        >控件检索</el-button>
         <el-radio-group v-if="showFlowToggle" v-model="editorMode" size="small" style="margin-left: auto">
           <el-radio-button value="code">代码模式</el-radio-button>
           <el-radio-button value="flow">图形模式</el-radio-button>
         </el-radio-group>
       </div>
-      <el-tabs v-model="activeFile" type="card" closable @tab-remove="tryRemoveFile">
-        <el-tab-pane v-for="f in editorFiles" :key="f.name" :name="f.name">
-          <template #label>
-            <span :style="f.text ? '' : 'color:#909399'">{{ f.name }}</span>
-          </template>
-          <div v-if="f.text">
-            <FlowEditor
-              v-if="f.name === 'main.js' && editorMode === 'flow'"
-              :blocks="flowBlocks" @change="syncFlowToCode"
-            />
-            <CodeEditor v-else v-model="f.content" :filename="f.name" :language="langFor(f.name)" />
+      <div class="editor-layout">
+        <div class="editor-main">
+          <el-tabs v-model="activeFile" type="card" closable @tab-remove="tryRemoveFile">
+            <el-tab-pane v-for="f in editorFiles" :key="f.name" :name="f.name">
+              <template #label>
+                <span :style="f.text ? '' : 'color:#909399'">{{ f.name }}</span>
+              </template>
+              <div v-if="f.text">
+                <FlowEditor
+                  v-if="f.name === 'main.js' && editorMode === 'flow'"
+                  :blocks="flowBlocks" @change="syncFlowToCode"
+                />
+                <CodeEditor
+                  v-else v-model="f.content" :filename="f.name" :language="langFor(f.name)"
+                  :ref="(el: any) => setEditorRef(f.name, el)"
+                />
+              </div>
+              <el-alert v-else :title="`二进制文件（${f.size} 字节），不支持在线编辑，保存时将原样保留`" type="info" :closable="false" />
+            </el-tab-pane>
+          </el-tabs>
+        </div>
+        <div v-if="inspectorOpen" class="inspector-panel">
+          <div class="panel-title">
+            控件检索
+            <span class="panel-sub">截图点选或树过滤控件，一键插入代码</span>
           </div>
-          <el-alert v-else :title="`二进制文件（${f.size} 字节），不支持在线编辑，保存时将原样保留`" type="info" :closable="false" />
-        </el-tab-pane>
-      </el-tabs>
+          <el-select
+            v-model="inspectorDeviceId" filterable placeholder="选择在线设备" size="small"
+            style="width: 100%; margin-bottom: 8px"
+          >
+            <el-option
+              v-for="d in onlineDevices" :key="d.id"
+              :label="`${d.deviceSn}${d.name ? ' ' + d.name : ''}`" :value="d.id"
+            />
+          </el-select>
+          <UiInspector v-if="inspectorDeviceId" :device-id="inspectorDeviceId" @select="inspectorNode = $event" />
+          <div v-else class="panel-empty">
+            选择设备后抓取屏幕：点截图/树选中控件；开「遥控点击」可直接点设备屏幕
+          </div>
+          <div v-if="inspectorNode" class="insert-bar">
+            <div class="insert-tip">
+              插入{{ editorMode === 'flow' ? '流程块到末尾' : `到 ${activeFile} 光标处` }}
+              <span class="mono">（{{ suggestedExpr }}）</span>
+            </div>
+            <el-button v-for="k in availableKinds" :key="k" size="small" type="primary" plain @click="insertSnippet(k)">
+              {{ SNIPPET_LABELS[k] }}
+            </el-button>
+          </div>
+        </div>
+      </div>
       <template #footer>
         <el-button @click="editorDlg = false">取消</el-button>
         <el-button type="primary" :loading="editorSaving" @click="saveEditor">保存为新版本</el-button>
@@ -151,12 +190,15 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listScripts, listVersions, uploadVersion, publishScript, publishRecords, listGroups,
-  getVersionFiles, uploadVersionEditor
+  getVersionFiles, uploadVersionEditor, deviceOptions, type UiTreeNode
 } from '../api'
+import { Aim } from '@element-plus/icons-vue'
 import CodeEditor from '../components/CodeEditor.vue'
 import FlowEditor from '../components/FlowEditor.vue'
+import UiInspector from '../components/UiInspector.vue'
 import { parseCode } from '../editor/blocks/parse'
 import { genCode } from '../editor/blocks/codegen'
+import { SNIPPET_LABELS, snippetCode, snippetBlock, suggestSelector, type SnippetKind } from '../editor/snippets'
 import type { Block } from '../editor/blocks/types'
 
 const route = useRoute()
@@ -210,6 +252,62 @@ watch(editorMode, mode => {
   flowBlocks.value = r.blocks
 })
 
+// ---------- 控件检索助手（编辑抽屉右侧面板） ----------
+const inspectorOpen = ref(false)
+const onlineDevices = ref<any[]>([])
+const inspectorDeviceId = ref<number | null>(null)
+const inspectorNode = ref<UiTreeNode | null>(null)
+
+// 每个文件对应的 CodeEditor 实例（插码定位到当前激活文件的光标）
+const editorRefs = new Map<string, any>()
+const setEditorRef = (name: string, el: any) => {
+  if (el) editorRefs.set(name, el)
+  else editorRefs.delete(name)
+}
+
+const toggleInspector = async () => {
+  inspectorOpen.value = !inspectorOpen.value
+  if (inspectorOpen.value) {
+    // 每次打开都刷新在线设备列表（状态会变化）
+    try {
+      onlineDevices.value = ((await deviceOptions()) || []).filter((d: any) => d.online === 1)
+    } catch { /* 拦截器已提示 */ }
+  }
+}
+
+const suggestedExpr = computed(
+  () => (inspectorNode.value && suggestSelector(inspectorNode.value))?.expr || '无 id/text/desc'
+)
+
+const availableKinds = computed(() => {
+  const n = inspectorNode.value
+  if (!n) return []
+  return (Object.keys(SNIPPET_LABELS) as SnippetKind[]).filter(k =>
+    editorMode.value === 'flow' ? !!snippetBlock(k, n) : !!snippetCode(k, n)
+  )
+})
+
+/** 插码：图形模式追加流程块（并同步回代码），代码模式插入当前激活 .js 文件光标处 */
+const insertSnippet = (kind: SnippetKind) => {
+  const node = inspectorNode.value
+  if (!node) return
+  if (editorMode.value === 'flow' && activeFile.value === 'main.js') {
+    const block = snippetBlock(kind, node)
+    if (!block) return ElMessage.warning('该片段没有对应流程块，请切到代码模式插入')
+    flowBlocks.value.push(block)
+    syncFlowToCode()
+    ElMessage.success(`已追加「${SNIPPET_LABELS[kind]}」流程块`)
+    return
+  }
+  const name = activeFile.value
+  if (!name.endsWith('.js')) return ElMessage.warning('仅支持插入到 .js 文件')
+  const code = snippetCode(kind, node)
+  if (!code) return ElMessage.warning('该控件缺少可用信息（无 id/text/desc 或坐标）')
+  const inst = editorRefs.get(name)
+  if (!inst || !inst.insertAtCursor(code)) return ElMessage.warning('编辑器未就绪，请稍后重试')
+  ElMessage.success(`已插入 ${name} 光标处`)
+}
+
 const nextVersionCode = () => Math.max(1, (versions.value[0]?.versionCode || 0) + 1)
 
 const openEditorVersion = async (row: any) => {
@@ -226,6 +324,7 @@ const openEditorVersion = async (row: any) => {
     activeFile.value = 'main.js'
     editorMode.value = 'code'
     flowBlocks.value = []
+    inspectorOpen.value = false
     editorDlg.value = true
   } catch { /* 拦截器已提示 */ }
 }
@@ -257,6 +356,7 @@ const openEditorNew = async () => {
   activeFile.value = 'main.js'
   editorMode.value = 'code'
   flowBlocks.value = []
+  inspectorOpen.value = false
   editorDlg.value = true
 }
 
@@ -407,3 +507,62 @@ onMounted(async () => {
   resetUpload()
 })
 </script>
+
+<style scoped>
+.editor-layout {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.editor-main {
+  flex: 1;
+  min-width: 0;
+}
+.inspector-panel {
+  flex: none;
+  width: 400px;
+  max-height: 74vh;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: #fafbfd;
+}
+.panel-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.panel-sub {
+  font-weight: 400;
+  font-size: 12px;
+  color: #94a3b8;
+}
+.panel-empty {
+  padding: 40px 12px;
+  text-align: center;
+  color: #a8adb8;
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+.insert-bar {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--el-border-color);
+}
+.insert-tip {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+.mono {
+  font-family: Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: #4f6bf5;
+}
+</style>

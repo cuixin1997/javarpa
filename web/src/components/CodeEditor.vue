@@ -53,6 +53,27 @@ watch(() => props.modelValue, v => {
   applying = false
 })
 
+/** 在光标处插入文本（控件检索面板插码用），光标移到插入内容末尾并滚动可见 */
+function insertAtCursor(text: string): boolean {
+  if (!editor || !model || !monaco) return false
+  const pos = editor.getPosition() ?? { lineNumber: 1, column: 1 }
+  const offset = model.getOffsetAt(pos)
+  editor.executeEdits('snippet', [{
+    range: new monaco.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column),
+    text,
+    forceMoveMarkers: true
+  }])
+  const endPos = model.getPositionAt(offset + text.length)
+  if (endPos) {
+    editor.setPosition(endPos)
+    editor.revealLine(endPos.lineNumber)
+  }
+  editor.focus()
+  return true
+}
+
+defineExpose({ insertAtCursor })
+
 onBeforeUnmount(() => {
   editor?.dispose()
   model?.dispose()

@@ -73,8 +73,8 @@ export interface UiTreeNode {
 export interface DebugLatest<T = any> { type: string; ts: number; data: T }
 export interface DumpData { tree: { roots: UiTreeNode[]; nodeCount: number } }
 export interface CaptureData { width: number; height: number; image: string }
-export const deviceDebugTrigger = (id: any, kind: 'dump' | 'capture') =>
-  http.post(`/devices/${id}/debug/${kind}`)
+export const deviceDebugTrigger = (id: any, kind: 'dump' | 'capture' | 'tap', data?: { x: number; y: number }) =>
+  http.post(`/devices/${id}/debug/${kind}`, data)
 export const deviceDebugLatest = (id: any, type: 'dump' | 'capture') =>
   http.get<DebugLatest | null>(`/devices/${id}/debug/latest`, { params: { type } })
 

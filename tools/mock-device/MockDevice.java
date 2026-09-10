@@ -151,6 +151,10 @@ public class MockDevice {
                         }
                     });
                 }
+                case "CMD_TAP" -> {
+                    System.out.println("[mock] CMD_TAP x=" + extract(raw, "x") + " y=" + extract(raw, "y"));
+                    ack(msgId, true, null);
+                }
                 case "REGISTER_ACK" -> System.out.println("[mock] registered on server ✓");
                 default -> System.out.println("[mock] msg " + type);
             }
