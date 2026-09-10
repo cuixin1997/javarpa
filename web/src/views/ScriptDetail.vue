@@ -97,7 +97,7 @@
       </template>
     </el-dialog>
 
-    <el-drawer v-model="editorDlg" :title="editorTitle" size="72%" :close-on-click-modal="false">
+    <el-drawer v-model="editorDlg" :title="editorTitle" size="90%" :close-on-click-modal="false">
       <el-form inline>
         <el-form-item label="保存为版本">
           <el-input-number v-model="editorForm.versionCode" :min="1" size="small" />
@@ -109,14 +109,18 @@
           <el-input v-model="editorForm.changelog" placeholder="本次改动" size="small" style="width: 220px" />
         </el-form-item>
       </el-form>
-      <div style="margin-bottom: 8px">
+      <div style="margin-bottom: 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px">
         <el-button size="small" @click="addFile">新增文件</el-button>
         <el-button size="small" type="danger" plain :disabled="!canDeleteActive" @click="removeActiveFile">
           删除当前文件
         </el-button>
-        <span v-if="editorBase > 0" style="color: #909399; font-size: 12px; margin-left: 8px">
+        <span v-if="editorBase > 0" style="color: #909399; font-size: 12px">
           基于 v{{ editorBase }} 修改，保存后将生成新 zip 版本
         </span>
+        <el-radio-group v-if="showFlowToggle" v-model="editorMode" size="small" style="margin-left: auto">
+          <el-radio-button value="code">代码模式</el-radio-button>
+          <el-radio-button value="flow">图形模式</el-radio-button>
+        </el-radio-group>
       </div>
       <el-tabs v-model="activeFile" type="card" closable @tab-remove="tryRemoveFile">
         <el-tab-pane v-for="f in editorFiles" :key="f.name" :name="f.name">
@@ -124,13 +128,11 @@
             <span :style="f.text ? '' : 'color:#909399'">{{ f.name }}</span>
           </template>
           <div v-if="f.text">
-            <textarea
-              v-model="f.content"
-              spellcheck="false"
-              style="width: 100%; height: 55vh; box-sizing: border-box; font-family: Menlo, Consolas, monospace;
-                font-size: 13px; line-height: 1.6; padding: 12px; border: 1px solid #3a3f4f; border-radius: 4px;
-                background: #1e222d; color: #d7dae0; resize: vertical; tab-size: 2"
+            <FlowEditor
+              v-if="f.name === 'main.js' && editorMode === 'flow'"
+              :blocks="flowBlocks" @change="syncFlowToCode"
             />
+            <CodeEditor v-else v-model="f.content" :filename="f.name" :language="langFor(f.name)" />
           </div>
           <el-alert v-else :title="`二进制文件（${f.size} 字节），不支持在线编辑，保存时将原样保留`" type="info" :closable="false" />
         </el-tab-pane>
@@ -144,13 +146,18 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listScripts, listVersions, uploadVersion, publishScript, publishRecords, listGroups,
   getVersionFiles, uploadVersionEditor
 } from '../api'
+import CodeEditor from '../components/CodeEditor.vue'
+import FlowEditor from '../components/FlowEditor.vue'
+import { parseCode } from '../editor/blocks/parse'
+import { genCode } from '../editor/blocks/codegen'
+import type { Block } from '../editor/blocks/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -177,6 +184,32 @@ const editorBase = ref(0)
 const editorSaving = ref(false)
 const editorForm = reactive({ versionCode: 1, versionName: '', changelog: '' })
 
+// main.js 的「代码 / 图形」双模式：代码是唯一事实源，图形块编辑后即时生成回代码
+const editorMode = ref<'code' | 'flow'>('code')
+const flowBlocks = ref<Block[]>([])
+
+const showFlowToggle = computed(() => activeFile.value === 'main.js')
+const langFor = (name: string) => (name.endsWith('.json') ? 'json' : name.endsWith('.js') ? 'javascript' : 'plaintext')
+
+/** 图形块有任何编辑就即时写回 main.js（注释与未识别代码以块形式保留，语义不丢失） */
+const syncFlowToCode = () => {
+  const mf = editorFiles.value.find(f => f.name === 'main.js')
+  if (mf) mf.content = genCode(flowBlocks.value)
+}
+
+watch(editorMode, mode => {
+  if (mode !== 'flow') return
+  const mf = editorFiles.value.find(f => f.name === 'main.js')
+  if (!mf) return
+  const r = parseCode(mf.content)
+  if (r.error) {
+    ElMessage.error(`main.js 存在语法错误，无法进入图形模式：${r.error}`)
+    editorMode.value = 'code'
+    return
+  }
+  flowBlocks.value = r.blocks
+})
+
 const nextVersionCode = () => Math.max(1, (versions.value[0]?.versionCode || 0) + 1)
 
 const openEditorVersion = async (row: any) => {
@@ -191,6 +224,8 @@ const openEditorVersion = async (row: any) => {
     editorForm.versionName = row.versionName || ''
     editorForm.changelog = `基于 v${row.versionCode} 修改`
     activeFile.value = 'main.js'
+    editorMode.value = 'code'
+    flowBlocks.value = []
     editorDlg.value = true
   } catch { /* 拦截器已提示 */ }
 }
@@ -220,6 +255,8 @@ const openEditorNew = async () => {
   editorForm.versionName = ''
   editorForm.changelog = ''
   activeFile.value = 'main.js'
+  editorMode.value = 'code'
+  flowBlocks.value = []
   editorDlg.value = true
 }
 
@@ -254,6 +291,8 @@ const tryRemoveFile = (name: any) => removeFile(String(name))
 
 const saveEditor = async () => {
   if (editorSaving.value) return
+  // 图形模式下块内容已在每次编辑时同步，这里兜底再同步一次（如空块列表生成空代码的场景）
+  if (editorMode.value === 'flow') syncFlowToCode()
   const files = editorFiles.value.filter(f => f.text).map(f => ({ name: f.name, content: f.content }))
   editorSaving.value = true
   try {

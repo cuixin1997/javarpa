@@ -28,7 +28,8 @@ bash tools/e2e.sh                             # 需先起 server；自动清理�
 ## 架构边界（改动前必读对应文档）
 
 - **设备协议**：改 `server/ws/` 或 `android/ws/WsClient.java` 前先读 `docs/protocol.md`。原生 WebSocket `/ws/device`，信封 `{type,msgId,ts,data}`；设备收 `CMD_*` 必须回 `ACK`；离线指令走 Redis 待发队列（Redis 不可用时自动降级跳过补发）；心跳 90s 超时判离线。协议是云端与设备端的双向契约，两端必须同步改。
-- **Rhino 沙箱**：`android/api/`（AutoApi/NodeApi/ImageApi 等暴露给脚本的 JS API）改动必须同步更新 `docs/script-development.md`（手册声明与源码一一对应）。`SandboxShutter` 用 ClassShutter 禁 `java.*`（含反射逃逸），不得为绕限制放开。
+- **Rhino 沙箱**：`android/api/`（AutoApi/NodeApi/ImageApi 等暴露给脚本的 JS API）改动必须同步更新 `docs/script-development.md`（手册声明与源码一一对应）和 `web/src/editor/rpaApi.d.ts`（web 在线编辑器 Monaco 补全的中文文档数据源）。`SandboxShutter` 用 ClassShutter 禁 `java.*`（含反射逃逸），不得为绕限制放开。
+- **脚本图形化编辑**：`web/src/editor/blocks/`（blockDefs/parse/codegen）实现 main.js ↔ 中文流程块双向转换，代码是唯一事实源（脚本包内不落任何图形模型文件）。约束：blockDefs 的 `emit` 输出必须能被自己的 `match` 原样识别（幂等），matcher 只认字面量参数、未识别语句一律降级为「自定义代码」块原文保留。
 - **server 分层**：controller（返回 `common/R.java`，code=0 成功）→ service → mapper（MyBatis-Plus）。业务异常抛 `ApiException`，由 `GlobalExceptionHandler` 统一转 R。SQL 全参数化，不走拼接。
 - **鉴权三套**：管理端 JWT（`JwtInterceptor`）、设备端 deviceSn+secret（WS 握手 `DeviceHandshakeInterceptor`、脚本下载 `DeviceAuthInterceptor`，失败均 HTTP 401 拒绝——设备端识别 401/403 后停止重连）、开放 API `/open/v1/**` 用 `X-API-Token`（`ApiTokenInterceptor`，库存 SHA-256 哈希）。密钥/密码不明文落库。
 - **web 数据流**：`src/api/http.ts` 已解包 `{code,msg,data}` 并直接返回 `data`，401 时统一登出且必须 `disconnectStomp()`（否则旧 token 每 5s 重连风暴——已处理，勿绕过该封装直接用 axios）。实时推送走 `src/ws/stomp.ts`（带重连补订）。
