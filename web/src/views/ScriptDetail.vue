@@ -125,6 +125,10 @@
           <el-radio-button value="code">代码模式</el-radio-button>
           <el-radio-button value="flow">图形模式</el-radio-button>
         </el-radio-group>
+        <el-radio-group v-if="showConfigToggle" v-model="configMode" size="small" style="margin-left: auto">
+          <el-radio-button value="form">表单模式</el-radio-button>
+          <el-radio-button value="code">代码模式</el-radio-button>
+        </el-radio-group>
       </div>
       <div class="editor-layout">
         <div class="editor-main">
@@ -137,6 +141,10 @@
                 <FlowEditor
                   v-if="f.name === 'main.js' && editorMode === 'flow'"
                   :blocks="flowBlocks" @change="syncFlowToCode"
+                />
+                <ConfigForm
+                  v-else-if="f.name === 'config.json' && configMode === 'form'"
+                  v-model="f.content"
                 />
                 <CodeEditor
                   v-else v-model="f.content" :filename="f.name" :language="langFor(f.name)"
@@ -196,6 +204,7 @@ import { Aim } from '@element-plus/icons-vue'
 import CodeEditor from '../components/CodeEditor.vue'
 import FlowEditor from '../components/FlowEditor.vue'
 import UiInspector from '../components/UiInspector.vue'
+import ConfigForm from '../components/ConfigForm.vue'
 import { parseCode } from '../editor/blocks/parse'
 import { genCode } from '../editor/blocks/codegen'
 import { SNIPPET_LABELS, snippetCode, snippetBlock, suggestSelector, type SnippetKind } from '../editor/snippets'
@@ -230,7 +239,11 @@ const editorForm = reactive({ versionCode: 1, versionName: '', changelog: '' })
 const editorMode = ref<'code' | 'flow'>('code')
 const flowBlocks = ref<Block[]>([])
 
+// config.json 的「表单 / 代码」双模式：表单实时生成 JSON，未知字段原样保留
+const configMode = ref<'form' | 'code'>('form')
+
 const showFlowToggle = computed(() => activeFile.value === 'main.js')
+const showConfigToggle = computed(() => activeFile.value === 'config.json')
 const langFor = (name: string) => (name.endsWith('.json') ? 'json' : name.endsWith('.js') ? 'javascript' : 'plaintext')
 
 /** 图形块有任何编辑就即时写回 main.js（注释与未识别代码以块形式保留，语义不丢失） */
@@ -250,6 +263,19 @@ watch(editorMode, mode => {
     return
   }
   flowBlocks.value = r.blocks
+})
+
+// 进入 config.json 表单模式前校验 JSON 合法性（非法则留在代码模式）
+watch(configMode, mode => {
+  if (mode !== 'form') return
+  const cf = editorFiles.value.find(f => f.name === 'config.json')
+  if (!cf) return
+  try {
+    JSON.parse(cf.content)
+  } catch (e) {
+    ElMessage.error(`config.json 不是合法 JSON，无法进入表单模式：${(e as Error).message}`)
+    configMode.value = 'code'
+  }
 })
 
 // ---------- 控件检索助手（编辑抽屉右侧面板） ----------
@@ -324,6 +350,7 @@ const openEditorVersion = async (row: any) => {
     activeFile.value = 'main.js'
     editorMode.value = 'code'
     flowBlocks.value = []
+    configMode.value = 'form'
     inspectorOpen.value = false
     editorDlg.value = true
   } catch { /* 拦截器已提示 */ }
@@ -356,6 +383,7 @@ const openEditorNew = async () => {
   activeFile.value = 'main.js'
   editorMode.value = 'code'
   flowBlocks.value = []
+  configMode.value = 'form'
   inspectorOpen.value = false
   editorDlg.value = true
 }
