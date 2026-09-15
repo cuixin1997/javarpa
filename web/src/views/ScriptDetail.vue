@@ -548,8 +548,9 @@ onMounted(async () => {
 }
 .inspector-panel {
   flex: none;
-  width: 400px;
-  max-height: 74vh;
+  /* 宽度容纳「截图 | UI树」左右两栏，与设备调试页布局一致；小屏自适应收缩 */
+  width: min(680px, 48vw);
+  max-height: 78vh;
   overflow-y: auto;
   box-sizing: border-box;
   padding: 10px;

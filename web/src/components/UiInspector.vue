@@ -346,14 +346,14 @@ onUnmounted(() => {
   color: var(--el-text-color-secondary);
   font-size: 13px;
 }
-/* 宽容器两栏（截图/树），窄面板自动换行堆叠 */
+/* 固定左右两栏：左截图、右控件树（与设备调试页一致） */
 .insp-cols {
   display: flex;
-  flex-wrap: wrap;
   gap: 10px;
+  align-items: flex-start;
 }
-.insp-shot { flex: 1 1 280px; min-width: 0; }
-.insp-tree { flex: 1.2 1 280px; min-width: 0; }
+.insp-shot { flex: 1; min-width: 0; }
+.insp-tree { flex: 1.2; min-width: 0; }
 .insp-meta {
   color: var(--el-text-color-secondary);
   font-size: 12px;
