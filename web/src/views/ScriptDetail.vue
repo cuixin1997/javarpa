@@ -453,6 +453,12 @@ const debugRun = async () => {
   if (debugStarting.value || debugRunning.value) return
   const devId = debugDeviceId.value
   if (!devId) return ElMessage.warning('请选择调试设备')
+  // 设备必须实时在线（调试指令不排队；离线时下发的任务指令会挂起到设备重连才执行，
+  // 期间任务面板只显示乐观状态，极易误判为"在跑"）
+  await loadOnlineDevices()
+  if (!onlineDevices.value.some((d: any) => d.id === devId)) {
+    return ElMessage.error('所选设备不在线：请点亮手机屏幕并确认引擎 App 显示「已连接」后重试')
+  }
   try {
     JSON.parse(debugParams.value || '{}')
   } catch {
