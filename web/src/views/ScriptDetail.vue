@@ -160,15 +160,21 @@
             控件检索
             <span class="panel-sub">截图点选或树过滤控件，一键插入代码</span>
           </div>
-          <el-select
-            v-model="inspectorDeviceId" filterable placeholder="选择在线设备" size="small"
-            style="width: 100%; margin-bottom: 8px"
-          >
-            <el-option
-              v-for="d in onlineDevices" :key="d.id"
-              :label="`${d.deviceSn}${d.name ? ' ' + d.name : ''}`" :value="d.id"
-            />
-          </el-select>
+          <div style="display: flex; gap: 6px; margin-bottom: 8px">
+            <el-select
+              v-model="inspectorDeviceId" filterable placeholder="选择在线设备" size="small"
+              style="flex: 1; min-width: 0"
+            >
+              <el-option
+                v-for="d in onlineDevices" :key="d.id"
+                :label="`${d.deviceSn}${d.name ? ' ' + d.name : ''}`" :value="d.id"
+              />
+            </el-select>
+            <el-button
+              size="small" :icon="RefreshRight" :loading="devicesLoading"
+              title="重新拉取在线设备列表" @click="loadOnlineDevices"
+            >刷新设备</el-button>
+          </div>
           <UiInspector v-if="inspectorDeviceId" :device-id="inspectorDeviceId" @select="inspectorNode = $event" />
           <div v-else class="panel-empty">
             选择设备后抓取屏幕：点截图/树选中控件；开「遥控点击」可直接点设备屏幕
@@ -200,7 +206,7 @@ import {
   listScripts, listVersions, uploadVersion, publishScript, publishRecords, listGroups,
   getVersionFiles, uploadVersionEditor, deviceOptions, type UiTreeNode
 } from '../api'
-import { Aim } from '@element-plus/icons-vue'
+import { Aim, RefreshRight } from '@element-plus/icons-vue'
 import CodeEditor from '../components/CodeEditor.vue'
 import FlowEditor from '../components/FlowEditor.vue'
 import UiInspector from '../components/UiInspector.vue'
@@ -283,6 +289,7 @@ const inspectorOpen = ref(false)
 const onlineDevices = ref<any[]>([])
 const inspectorDeviceId = ref<number | null>(null)
 const inspectorNode = ref<UiTreeNode | null>(null)
+const devicesLoading = ref(false)
 
 // 每个文件对应的 CodeEditor 实例（插码定位到当前激活文件的光标）
 const editorRefs = new Map<string, any>()
@@ -291,14 +298,19 @@ const setEditorRef = (name: string, el: any) => {
   else editorRefs.delete(name)
 }
 
-const toggleInspector = async () => {
-  inspectorOpen.value = !inspectorOpen.value
-  if (inspectorOpen.value) {
-    // 每次打开都刷新在线设备列表（状态会变化）
-    try {
-      onlineDevices.value = ((await deviceOptions()) || []).filter((d: any) => d.online === 1)
-    } catch { /* 拦截器已提示 */ }
+/** 重新拉取在线设备列表（面板打开时与「刷新设备」按钮共用） */
+const loadOnlineDevices = async () => {
+  devicesLoading.value = true
+  try {
+    onlineDevices.value = ((await deviceOptions()) || []).filter((d: any) => d.online === 1)
+  } catch { /* 拦截器已提示 */ } finally {
+    devicesLoading.value = false
   }
+}
+
+const toggleInspector = () => {
+  inspectorOpen.value = !inspectorOpen.value
+  if (inspectorOpen.value) loadOnlineDevices()
 }
 
 const suggestedExpr = computed(
