@@ -10,13 +10,17 @@
 
     <div v-if="!deviceId" class="insp-empty">请先选择在线设备</div>
     <template v-else>
+      <el-alert
+        v-if="warn" :title="warn" type="warning" :closable="false" show-icon
+        style="margin-bottom: 8px"
+      />
       <div class="insp-cols">
         <div class="insp-shot">
           <div ref="shotWrap" class="shot-wrap">
             <canvas ref="canvasRef" :class="['shot-canvas', { remote: remoteTap }]" @click="onCanvasClick" />
             <div v-if="!hasShot" class="shot-empty">暂无截图（设备在线后点「刷新」抓取）</div>
           </div>
-          <div class="insp-meta">
+          <div class="insp-meta" :class="{ stale: isStale(captureAt) }">
             {{ shotInfo }}{{ remoteTap ? ' · 遥控中：点击截图=设备真点' : ' · 点击截图反查控件' }}
           </div>
         </div>
@@ -33,7 +37,7 @@
               @current-change="onTreeCurrent"
             />
           </div>
-          <div v-if="treeInfo" class="insp-meta">{{ treeInfo }}</div>
+          <div v-if="treeInfo" class="insp-meta" :class="{ stale: isStale(dumpAt) }">{{ treeInfo }}</div>
         </div>
       </div>
 
@@ -92,6 +96,9 @@ const refreshing = ref(false)
 const autoRefresh = ref(false)
 const remoteTap = ref(false)
 const hasShot = ref(false)
+/** 触发调试指令后设备未回传新数据时的提示（典型原因：无障碍服务未开启） */
+const warn = ref('')
+let waitTimer: any = null
 
 // 截图状态：img 为解码后的 HTMLImageElement，screenW/H 为原始屏幕尺寸（overlay 坐标系）
 let img: HTMLImageElement | null = null
@@ -110,8 +117,18 @@ let timer: any = null
 let remoteTimer: any = null
 
 const fmtTime = (ts: number) => (ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour12: false }) : '')
-const shotInfo = computed(() => (hasShot.value ? `${screenW}x${screenH} · ${fmtTime(captureAt)}` : ''))
-const treeInfo = computed(() => (nodeCount ? `${nodeCount} 节点 · ${fmtTime(dumpAt)}` : ''))
+/** 数据年龄：超过 2 分钟视为陈旧（红色提示），定位"显示的是旧缓存"的情况 */
+const fmtAge = (ts: number) => {
+  if (!ts) return ''
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000))
+  if (s < 60) return '刚刚'
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`
+  return `${Math.floor(s / 86400)} 天前`
+}
+const isStale = (ts: number) => !!ts && Date.now() - ts > 120_000
+const shotInfo = computed(() => (hasShot.value ? `${screenW}x${screenH} · ${fmtAge(captureAt)}` : ''))
+const treeInfo = computed(() => (nodeCount ? `${nodeCount} 节点 · ${fmtAge(dumpAt)}` : ''))
 
 /* ---------------- 树数据 ---------------- */
 
@@ -135,7 +152,8 @@ function applyDump(data: DumpData, ts: number) {
   nodeCount = data.tree?.nodeCount || 0
   dumpAt = ts
   treeData.value = normalize(data.tree?.roots || [])
-  setSelected(null)
+  selected.value = null
+  warn.value = ''
 }
 
 /* ---------------- 截图与叠加 ---------------- */
@@ -151,6 +169,7 @@ function applyCapture(data: CaptureData, ts: number) {
     draw()
   }
   image.src = `data:image/jpeg;base64,${data.image}`
+  warn.value = ''
 }
 
 function draw() {
@@ -275,6 +294,8 @@ async function loadLatest() {
 async function refresh() {
   if (refreshing.value || !props.deviceId) return
   refreshing.value = true
+  const expectAt = Date.now()
+  warn.value = ''
   try {
     await Promise.all([
       deviceDebugTrigger(props.deviceId, 'dump'),
@@ -282,9 +303,19 @@ async function refresh() {
     ])
   } catch {
     // 拦截器已弹错（设备离线等），这里只负责复位状态
+    refreshing.value = false
+    return
   } finally {
     refreshing.value = false
   }
+  // 指令已受理但 6s 内没有新数据回传（如无障碍服务未开启被设备 ACK 拒绝）时给出明确提示，
+  // 避免面板一直展示旧缓存让人误以为是当前画面
+  if (waitTimer) clearTimeout(waitTimer)
+  waitTimer = setTimeout(() => {
+    if (dumpAt < expectAt || captureAt < expectAt) {
+      warn.value = '设备未返回新数据：请确认手机上「无障碍服务」已开启且引擎运行中，然后重试刷新'
+    }
+  }, 6000)
 }
 
 defineExpose({ refresh })
@@ -329,6 +360,7 @@ onUnmounted(() => {
   }
   if (timer) clearInterval(timer)
   if (remoteTimer) clearTimeout(remoteTimer)
+  if (waitTimer) clearTimeout(waitTimer)
   window.removeEventListener('resize', onResize)
   disconnectStomp()
 })
@@ -358,6 +390,10 @@ onUnmounted(() => {
   color: var(--el-text-color-secondary);
   font-size: 12px;
   margin-top: 4px;
+}
+.insp-meta.stale {
+  color: #f56c6c;
+  font-weight: 600;
 }
 .shot-wrap {
   position: relative;
