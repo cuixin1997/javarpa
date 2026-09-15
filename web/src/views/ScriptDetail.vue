@@ -121,6 +121,7 @@
           size="small" plain :type="inspectorOpen ? 'primary' : 'default'" :icon="Aim"
           @click="toggleInspector"
         >控件检索</el-button>
+        <el-button size="small" type="success" plain :icon="VideoPlay" @click="openDebug">调试运行</el-button>
         <el-radio-group v-if="showFlowToggle" v-model="editorMode" size="small" style="margin-left: auto">
           <el-radio-button value="code">代码模式</el-radio-button>
           <el-radio-button value="flow">图形模式</el-radio-button>
@@ -195,18 +196,55 @@
         <el-button type="primary" :loading="editorSaving" @click="saveEditor">保存为新版本</el-button>
       </template>
     </el-drawer>
+
+    <!-- 调试运行台：自动保存当前编辑为新版本 → 复用/创建调试任务 → 下发所选设备立即执行，实时看日志 -->
+    <el-dialog v-model="debugDlg" title="调试运行" width="760" :close-on-click-modal="false">
+      <div style="display: flex; gap: 8px; margin-bottom: 10px; align-items: center">
+        <el-select v-model="debugDeviceId" filterable placeholder="选择在线设备" size="small" style="width: 250px">
+          <el-option
+            v-for="d in onlineDevices" :key="d.id"
+            :label="`${d.deviceSn}${d.name ? ' ' + d.name : ''}`" :value="d.id"
+          />
+        </el-select>
+        <el-tag :type="debugRunning ? 'success' : 'info'" size="small">{{ debugRunning ? '运行中' : '空闲' }}</el-tag>
+        <span v-if="debugTaskId" style="color: #909399; font-size: 12px">任务 #{{ debugTaskId }}</span>
+        <span style="flex: 1" />
+        <el-button size="small" type="success" :icon="VideoPlay" :loading="debugStarting"
+          :disabled="debugRunning || !editorDlg" @click="debugRun">运行</el-button>
+        <el-button size="small" type="danger" plain :icon="VideoPause" :disabled="!debugRunning" @click="debugStop">
+          停止
+        </el-button>
+      </div>
+      <el-input
+        v-model="debugParams" type="textarea" :rows="2"
+        placeholder='任务参数 JSON（脚本内以 params 对象读取），如 {"pkg":"com.xxx"}'
+        style="margin-bottom: 10px; font-family: Menlo, Consolas, monospace"
+      />
+      <div class="debug-console">
+        <div v-if="!debugLogs.length" class="debug-empty">点「运行」后这里实时显示设备日志（脚本 log() 输出与任务状态变化）</div>
+        <div
+          v-for="(l, i) in debugLogs" :key="i"
+          :class="['log-line', 'lv-' + (l.level || 'INFO').toLowerCase()]"
+        >{{ l.text }}</div>
+      </div>
+      <div style="margin-top: 8px; color: #94a3b8; font-size: 12px">
+        运行会把当前编辑内容自动保存为新版本（版本名带「调试」标记），经调试任务下发到所选设备立即执行；调试版本会留在版本列表里可追溯。
+      </div>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listScripts, listVersions, uploadVersion, publishScript, publishRecords, listGroups,
-  getVersionFiles, uploadVersionEditor, deviceOptions, type UiTreeNode
+  getVersionFiles, uploadVersionEditor, deviceOptions, listTasks, createTask, updateTask, taskAction,
+  type UiTreeNode
 } from '../api'
-import { Aim, RefreshRight } from '@element-plus/icons-vue'
+import { Aim, RefreshRight, VideoPlay, VideoPause } from '@element-plus/icons-vue'
+import { connectStomp, subscribe } from '../ws/stomp'
 import CodeEditor from '../components/CodeEditor.vue'
 import FlowEditor from '../components/FlowEditor.vue'
 import UiInspector from '../components/UiInspector.vue'
@@ -345,6 +383,142 @@ const insertSnippet = (kind: SnippetKind) => {
   if (!inst || !inst.insertAtCursor(code)) return ElMessage.warning('编辑器未就绪，请稍后重试')
   ElMessage.success(`已插入 ${name} 光标处`)
 }
+
+// ---------- 调试运行（编辑器一键跑：自动存版本 → 复用调试任务 → 下发设备 → 实时日志） ----------
+const debugDlg = ref(false)
+const debugDeviceId = ref<number | null>(null)
+const debugParams = ref('{}')
+const debugStarting = ref(false)
+const debugRunning = ref(false)
+const debugTaskId = ref<number | null>(null)
+const debugLogs = ref<{ level: string; text: string }[]>([])
+let debugLogSub: any = null
+let debugStatusSub: any = null
+
+const debugTaskName = () => `调试-${scriptId()}`
+
+const fmtClock = (t: any) => {
+  let n = Number(t)
+  if (!n) return ''
+  if (n < 1e12) n *= 1000 // 秒级时间戳兼容
+  const d = new Date(n)
+  return isNaN(+d) ? '' : d.toLocaleTimeString('zh-CN', { hour12: false })
+}
+
+const pushLog = (level: string, text: string) => {
+  debugLogs.value.push({ level, text })
+  if (debugLogs.value.length > 300) debugLogs.value.splice(0, debugLogs.value.length - 300)
+  nextTick(() => {
+    const el = document.querySelector('.debug-console')
+    el?.scrollTo({ top: (el as HTMLElement).scrollHeight })
+  })
+}
+
+/** 订阅设备日志（按 taskId 过滤）与任务状态；重复调用先退订旧订阅 */
+function subscribeDebug(taskId: number, deviceId: number) {
+  connectStomp()
+  debugLogSub?.unsubscribe()
+  debugStatusSub?.unsubscribe()
+  debugLogSub = subscribe(`/topic/device/${deviceId}/logs`, (body: any) => {
+    if (body?.taskId && taskId && body.taskId !== taskId) return
+    pushLog(body?.level || 'INFO', `[${fmtClock(body.logTime)}] ${body?.content || ''}`)
+  })
+  debugStatusSub = subscribe(`/topic/task/${taskId}/status`, (body: any) => {
+    pushLog('INFO', `—— 设备 ${body?.deviceId ?? ''} 状态：${body?.status ?? JSON.stringify(body)} ——`)
+    if (['SUCCESS', 'FAILED', 'STOPPED'].includes(body?.status)) debugRunning.value = false
+  })
+}
+
+const openDebug = async () => {
+  if (!onlineDevices.value.length) await loadOnlineDevices()
+  if (!debugDeviceId.value) {
+    debugDeviceId.value = inspectorDeviceId.value ?? onlineDevices.value[0]?.id ?? null
+  }
+  debugDlg.value = true
+  // 任务还在跑时重新打开调试台，恢复订阅继续看日志
+  if (debugRunning.value && debugTaskId.value && debugDeviceId.value) {
+    subscribeDebug(debugTaskId.value, debugDeviceId.value)
+  }
+}
+
+watch(debugDlg, open => {
+  if (!open) {
+    debugLogSub?.unsubscribe()
+    debugStatusSub?.unsubscribe()
+    debugLogSub = debugStatusSub = null
+  }
+})
+
+const debugRun = async () => {
+  if (debugStarting.value || debugRunning.value) return
+  const devId = debugDeviceId.value
+  if (!devId) return ElMessage.warning('请选择调试设备')
+  try {
+    JSON.parse(debugParams.value || '{}')
+  } catch {
+    return ElMessage.warning('任务参数不是合法 JSON')
+  }
+  debugStarting.value = true
+  try {
+    // 1. 当前编辑内容落为新版本，保证跑的就是眼前这份代码
+    if (editorMode.value === 'flow') syncFlowToCode()
+    const files = editorFiles.value.filter(f => f.text).map(f => ({ name: f.name, content: f.content }))
+    const versionCode = nextVersionCode()
+    pushLog('INFO', `—— 正在保存当前编辑内容为 v${versionCode}… ——`)
+    await uploadVersionEditor(scriptId(), {
+      versionCode,
+      versionName: `调试 ${new Date().toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5)}`,
+      changelog: '编辑器调试运行自动保存',
+      baseVersionCode: editorBase.value || undefined,
+      files
+    })
+    editorBase.value = versionCode
+
+    // 2. 复用/创建本脚本的调试任务（IMMEDIATE + 不重试），指向所选设备与新版本
+    pushLog('INFO', '—— 准备调试任务… ——')
+    const payload = {
+      name: debugTaskName(),
+      scriptId: scriptId(),
+      versionCode,
+      paramsJson: debugParams.value || '{}',
+      scheduleType: 'IMMEDIATE',
+      maxRetries: 0,
+      deviceIds: [devId]
+    }
+    const tasks: any[] = (await listTasks()) || []
+    const existed = tasks.find(t => t.name === debugTaskName() && Number(t.scriptId ?? t.script?.id) === scriptId())
+    let task: any = null
+    if (existed) {
+      await updateTask(existed.id, payload)
+      task = existed
+    } else {
+      task = await createTask(payload)
+    }
+    debugTaskId.value = task.id
+
+    // 3. 下发启动 + 订阅实时日志
+    subscribeDebug(task.id, devId)
+    await taskAction(task.id, 'start')
+    debugRunning.value = true
+    pushLog('INFO', `—— 已下发到设备（任务 #${task.id}，v${versionCode}），等待日志… ——`)
+    await load()
+  } catch { /* 拦截器已提示 */ } finally {
+    debugStarting.value = false
+  }
+}
+
+const debugStop = async () => {
+  if (!debugTaskId.value) return
+  try {
+    await taskAction(debugTaskId.value, 'stop')
+    pushLog('INFO', '—— 已发送停止指令，等待设备退出… ——')
+  } catch { /* 拦截器已提示 */ }
+}
+
+onUnmounted(() => {
+  debugLogSub?.unsubscribe()
+  debugStatusSub?.unsubscribe()
+})
 
 const nextVersionCode = () => Math.max(1, (versions.value[0]?.versionCode || 0) + 1)
 
@@ -605,5 +779,33 @@ onMounted(async () => {
   font-family: Menlo, Consolas, monospace;
   font-size: 11.5px;
   color: #4f6bf5;
+}
+.debug-console {
+  background: #1e222d;
+  border-radius: 6px;
+  padding: 10px;
+  height: 320px;
+  overflow-y: auto;
+  box-sizing: border-box;
+  font-family: Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.debug-empty {
+  color: #6b7280;
+  text-align: center;
+  padding-top: 130px;
+}
+.log-line {
+  color: #d7dae0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.log-line.lv-warn,
+.log-line.lv-warning {
+  color: #e6a23c;
+}
+.log-line.lv-error {
+  color: #f56c6c;
 }
 </style>
