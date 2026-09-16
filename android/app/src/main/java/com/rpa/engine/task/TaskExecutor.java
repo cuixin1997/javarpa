@@ -191,8 +191,9 @@ public class TaskExecutor {
             status = "STOPPED";
         } catch (RhinoScriptEngine.ScriptStopException e) {
             status = "STOPPED";
-        } catch (Exception e) {
-            // Rhino 会把 js_* 方法抛出的 InterruptedException 包装为 WrappedException，需展开识别
+        } catch (Throwable e) {
+            // 必须兜 Throwable：NoClassDefFoundError 之类的 Error 若漏到线程外会直接杀死整个进程
+            //（连带 WS 断连、无障碍服务被系统回收）。先按停止语义识别，其余记 FAILED 上报原因。
             if (rc.stopRequested && isStopInterruption(e)) {
                 status = "STOPPED";
             } else {

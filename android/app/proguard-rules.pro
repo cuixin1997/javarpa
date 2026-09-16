@@ -3,6 +3,9 @@
 -keep class org.mozilla.javascript.** { *; }
 -dontwarn org.mozilla.javascript.**
 
+# Rhino 需要的 Android 缺失类补齐实现（JavaMembers 直接按全限定名解析），禁止混淆改名
+-keep class javax.lang.model.SourceVersion { *; }
+
 # Rhino 通过反射调用 js_* 内建函数与 Host 回调
 -keepclassmembers class com.rpa.engine.engine.RhinoScriptEngine {
     public static ** js_*;
