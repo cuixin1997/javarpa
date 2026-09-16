@@ -33,6 +33,7 @@
 | ACK | refMsgId, ok, error | 对 CMD_* 指令的执行确认 |
 | DUMP_UI | refMsgId, tree:{roots:[节点...], nodeCount} | UI 树调试上报（响应 CMD_DUMP_UI）。节点字段：text/id/desc/className/rect{x,y,w,h}/clickable/longClickable/scrollable/enabled/visibleToUser/childCount/children；深度与节点数有截断上限 |
 | CAPTURE | refMsgId, width, height, image | 屏幕截图调试上报（响应 CMD_CAPTURE）。width/height 为原始屏幕尺寸，image 为压缩 JPEG（宽≤720，质量 60）的 base64，用于管理端按比例叠加控件框 |
+| LIST_APPS | refMsgId, count, apps:[{pkg, label}] | 已安装可自启动应用列表（响应 CMD_LIST_APPS，编辑器「打开APP」选包名用）。pkg 为包名，label 为应用显示名（可能缺失）；条数上限 500 |
 
 ## 云端 → 设备
 
@@ -48,6 +49,7 @@
 | CMD_DUMP_UI | （无额外字段） | 请求设备上报当前完整控件树（云端 UI 检查器用；结果走 DUMP_UI 上行，不进离线补发队列） |
 | CMD_CAPTURE | （无额外字段） | 请求设备上报当前屏幕截图（结果走 CAPTURE 上行，不进离线补发队列；设备需 Android 11+ 且无障碍服务运行中） |
 | CMD_TAP | x, y（屏幕绝对像素） | 远程点击：设备在指定坐标派发无障碍点击手势（网页端 UI 检查器"遥控模式"用；仅回 ACK 无上行数据，不进离线补发队列） |
+| CMD_LIST_APPS | （无额外字段） | 请求设备上报已安装可自启动应用列表（结果走 LIST_APPS 上行，不进离线补发队列） |
 
 ## 指令可靠性
 

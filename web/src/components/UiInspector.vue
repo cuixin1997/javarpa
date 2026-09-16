@@ -3,6 +3,7 @@
     <div class="insp-toolbar">
       <el-switch v-model="autoRefresh" active-text="自动刷新" size="small" />
       <el-switch v-if="enableRemoteTap" v-model="remoteTap" active-text="遥控点击" size="small" style="margin-left: 10px" />
+      <el-switch v-model="pickPoint" active-text="取坐标" size="small" style="margin-left: 10px" />
       <el-button size="small" type="primary" :icon="Refresh" :loading="refreshing" style="margin-left: auto" @click="refresh">
         刷新
       </el-button>
@@ -21,7 +22,7 @@
             <div v-if="!hasShot" class="shot-empty">暂无截图（设备在线后点「刷新」抓取）</div>
           </div>
           <div class="insp-meta" :class="{ stale: isStale(captureAt) }">
-            {{ shotInfo }}{{ remoteTap ? ' · 遥控中：点击截图=设备真点' : ' · 点击截图反查控件' }}
+            {{ shotInfo }}{{ remoteTap ? ' · 遥控中：点击截图=设备真点' : pickPoint ? ' · 取坐标中：点击截图取任意点' : ' · 点击截图反查控件' }}
           </div>
         </div>
         <div class="insp-tree">
@@ -87,7 +88,10 @@ const props = withDefaults(defineProps<{
   enableRemoteTap?: boolean
 }>(), { enableRemoteTap: true })
 
-const emit = defineEmits<{ (e: 'select', node: UiTreeNode | null): void }>()
+const emit = defineEmits<{
+  (e: 'select', node: UiTreeNode | null): void
+  (e: 'pick', point: { x: number; y: number }): void
+}>()
 
 const treeData = ref<NormNode[]>([])
 const selected = ref<UiTreeNode | null>(null)
@@ -95,7 +99,10 @@ const filterText = ref('')
 const refreshing = ref(false)
 const autoRefresh = ref(false)
 const remoteTap = ref(false)
+const pickPoint = ref(false)
 const hasShot = ref(false)
+/** 取坐标模式下点选的屏幕坐标（画十字标记；新截图到达后失效） */
+const picked = ref<{ x: number; y: number } | null>(null)
 /** 触发调试指令后设备未回传新数据时的提示（典型原因：无障碍服务未开启） */
 const warn = ref('')
 let waitTimer: any = null
@@ -162,6 +169,8 @@ function applyCapture(data: CaptureData, ts: number) {
   captureAt = ts
   screenW = data.width
   screenH = data.height
+  // 画面已变化，旧坐标点失效
+  picked.value = null
   const image = new Image()
   image.onload = () => {
     img = image
@@ -195,9 +204,29 @@ function draw() {
     ctx.fillStyle = 'rgba(64, 158, 255, 0.18)'
     ctx.fillRect(sel.rect.x * scale, sel.rect.y * scale, sel.rect.w * scale, sel.rect.h * scale)
   }
+  // 取坐标模式：点选位置画橙色十字 + 坐标标注
+  if (picked.value) {
+    const scale = w / screenW
+    const px = picked.value.x * scale
+    const py = picked.value.y * scale
+    ctx.strokeStyle = '#e6a23c'
+    ctx.lineWidth = 2
+    ctx.beginPath()
+    ctx.moveTo(px - 14, py)
+    ctx.lineTo(px + 14, py)
+    ctx.moveTo(px, py - 14)
+    ctx.lineTo(px, py + 14)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.arc(px, py, 6, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.fillStyle = '#e6a23c'
+    ctx.font = '12px sans-serif'
+    ctx.fillText(`(${picked.value.x}, ${picked.value.y})`, Math.min(px + 10, w - 90), Math.max(py - 10, 14))
+  }
 }
 
-/** 点击截图：遥控模式=下发 CMD_TAP 真点；否则反查「包含该点且面积最小」的可见节点 */
+/** 点击截图：遥控模式=真点设备；取坐标模式=记录屏幕坐标并上报；默认=反查「包含该点且面积最小」的可见节点 */
 function onCanvasClick(e: MouseEvent) {
   const canvas = canvasRef.value
   if (!canvas || !screenW) return
@@ -206,6 +235,12 @@ function onCanvasClick(e: MouseEvent) {
   const sy = ((e.clientY - rect.top) / rect.height) * screenH
   if (remoteTap.value) {
     doRemoteTap(Math.round(sx), Math.round(sy))
+    return
+  }
+  if (pickPoint.value) {
+    picked.value = { x: Math.round(sx), y: Math.round(sy) }
+    emit('pick', picked.value)
+    draw()
     return
   }
   let best: NormNode | null = null

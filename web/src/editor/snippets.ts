@@ -105,3 +105,25 @@ export function snippetBlock(kind: SnippetKind, node: UiTreeNode): Block | null 
       return null
   }
 }
+
+// ---------- 应用列表 / 坐标拾取（编辑器助手面板用） ----------
+
+export function appLaunchCode(pkg: string): string {
+  return `auto.launch(${JSON.stringify(pkg)});`
+}
+
+export function appLaunchBlockOf(pkg: string): Block {
+  const b = createBlock('launch')
+  b.params = { pkg }
+  return b
+}
+
+export function tapPointCode(x: number, y: number): string {
+  return `auto.tap(${x}, ${y});`
+}
+
+export function tapPointBlockOf(x: number, y: number): Block {
+  const b = createBlock('tap')
+  b.params = { x, y }
+  return b
+}

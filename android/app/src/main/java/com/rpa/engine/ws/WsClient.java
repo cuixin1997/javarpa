@@ -35,6 +35,8 @@ public class WsClient implements TaskExecutor.Reporter {
     // 调试截图上行规格：720 宽 JPEG 已够人看/定位控件，同时把 base64 控制在 ~100KB 量级
     private static final int CAPTURE_MAX_WIDTH = 720;
     private static final int CAPTURE_QUALITY = 60;
+    // 应用列表上行条数上限：普通设备桌面级应用 <300，防极端机型拖垮 WS 文本帧
+    private static final int MAX_LIST_APPS = 500;
 
     private final Context context;
     private final TaskExecutor taskExecutor;
@@ -189,6 +191,9 @@ public class WsClient implements TaskExecutor.Reporter {
                 case "CMD_TAP":
                     debugExecutor.execute(() -> handleTap(msgId, payload));
                     break;
+                case "CMD_LIST_APPS":
+                    debugExecutor.execute(() -> handleListApps(msgId));
+                    break;
                 default:
                     break;
             }
@@ -264,6 +269,35 @@ public class WsClient implements TaskExecutor.Reporter {
             }
             boolean ok = UiOperator.tap(x, y);
             ack(msgId, ok, ok ? null : "点击手势派发失败");
+        } catch (Exception e) {
+            ack(msgId, false, e.getMessage());
+        }
+    }
+
+    /** 调试指令：枚举可自启动应用（编辑器「打开APP」选包名用），上行 LIST_APPS。 */
+    private void handleListApps(String msgId) {
+        try {
+            android.content.Intent main = new android.content.Intent(android.content.Intent.ACTION_MAIN)
+                    .addCategory(android.content.Intent.CATEGORY_LAUNCHER);
+            java.util.List<android.content.pm.ResolveInfo> ris =
+                    context.getPackageManager().queryIntentActivities(main, 0);
+            java.util.List<JSONObject> apps = new java.util.ArrayList<>();
+            for (android.content.pm.ResolveInfo ri : ris) {
+                if (ri.activityInfo == null) continue;
+                JSONObject app = new JSONObject();
+                app.put("pkg", ri.activityInfo.packageName);
+                CharSequence label = ri.loadLabel(context.getPackageManager());
+                if (label != null) app.put("label", label.toString());
+                apps.add(app);
+                if (apps.size() >= MAX_LIST_APPS) break;
+            }
+            apps.sort((a, b) -> String.valueOf(a.opt("label")).compareTo(String.valueOf(b.opt("label"))));
+            JSONObject data = new JSONObject();
+            data.put("refMsgId", msgId);
+            data.put("count", apps.size());
+            data.put("apps", new JSONArray(apps));
+            send("LIST_APPS", data);
+            ack(msgId, true, null);
         } catch (Exception e) {
             ack(msgId, false, e.getMessage());
         }

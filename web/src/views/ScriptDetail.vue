@@ -158,8 +158,13 @@
         </div>
         <div v-if="inspectorOpen" class="inspector-panel">
           <div class="panel-title">
-            控件检索
-            <span class="panel-sub">截图点选或树过滤控件，一键插入代码</span>
+            <el-radio-group v-model="inspectorMode" size="small">
+              <el-radio-button value="ui">控件检索</el-radio-button>
+              <el-radio-button value="apps">应用列表</el-radio-button>
+            </el-radio-group>
+            <span class="panel-sub">
+              {{ inspectorMode === 'ui' ? '截图点选/取坐标/树过滤，一键插码' : '选应用一键插「打开APP」' }}
+            </span>
           </div>
           <div style="display: flex; gap: 6px; margin-bottom: 8px">
             <el-select
@@ -176,19 +181,65 @@
               title="重新拉取在线设备列表" @click="loadOnlineDevices"
             >刷新设备</el-button>
           </div>
-          <UiInspector v-if="inspectorDeviceId" :device-id="inspectorDeviceId" @select="inspectorNode = $event" />
-          <div v-else class="panel-empty">
-            选择设备后抓取屏幕：点截图/树选中控件；开「遥控点击」可直接点设备屏幕
-          </div>
-          <div v-if="inspectorNode" class="insert-bar">
-            <div class="insert-tip">
-              插入{{ editorMode === 'flow' ? '流程块到末尾' : `到 ${activeFile} 光标处` }}
-              <span class="mono">（{{ suggestedExpr }}）</span>
+
+          <!-- 控件检索视图 -->
+          <template v-if="inspectorMode === 'ui'">
+            <UiInspector
+              v-if="inspectorDeviceId" :device-id="inspectorDeviceId"
+              @select="inspectorNode = $event" @pick="inspectorPoint = $event"
+            />
+            <div v-else class="panel-empty">
+              选择设备后抓取屏幕：点截图/树选中控件；开「遥控点击」可直接点设备屏幕
             </div>
-            <el-button v-for="k in availableKinds" :key="k" size="small" type="primary" plain @click="insertSnippet(k)">
-              {{ SNIPPET_LABELS[k] }}
-            </el-button>
-          </div>
+            <div v-if="inspectorNode" class="insert-bar">
+              <div class="insert-tip">
+                插入{{ editorMode === 'flow' ? '流程块到末尾' : `到 ${activeFile} 光标处` }}
+                <span class="mono">（{{ suggestedExpr }}）</span>
+              </div>
+              <el-button v-for="k in availableKinds" :key="k" size="small" type="primary" plain @click="insertSnippet(k)">
+                {{ SNIPPET_LABELS[k] }}
+              </el-button>
+            </div>
+            <div v-if="inspectorPoint" class="insert-bar">
+              <div class="insert-tip">
+                插入坐标点击 <span class="mono">({{ inspectorPoint.x }}, {{ inspectorPoint.y }})</span>
+              </div>
+              <el-button size="small" type="primary" plain @click="insertPoint">坐标点击</el-button>
+            </div>
+          </template>
+
+          <!-- 应用列表视图 -->
+          <template v-else>
+            <div style="display: flex; gap: 6px; margin-bottom: 8px">
+              <el-input
+                v-model="appKw" placeholder="搜索应用名 / 包名" clearable size="small"
+                style="flex: 1" :prefix-icon="Search"
+              />
+              <el-button
+                size="small" type="primary" :icon="RefreshRight" :loading="appsLoading"
+                @click="loadApps"
+              >获取</el-button>
+            </div>
+            <div class="apps-list">
+              <div
+                v-for="a in filteredApps" :key="a.pkg"
+                class="app-item" :class="{ active: selectedApp?.pkg === a.pkg }"
+                @click="selectedApp = a"
+              >
+                <div class="app-label">{{ a.label || a.pkg }}</div>
+                <div class="app-pkg">{{ a.pkg }}</div>
+              </div>
+              <div v-if="!filteredApps.length" class="panel-empty">
+                {{ appsList.length ? '没有匹配的应用' : '点「获取」从设备拉取已安装应用列表' }}
+              </div>
+            </div>
+            <div v-if="selectedApp" class="insert-bar">
+              <div class="insert-tip">
+                插入打开APP <span class="mono">{{ selectedApp.pkg }}</span>
+              </div>
+              <el-button size="small" type="primary" plain @click="insertApp">打开APP</el-button>
+            </div>
+          </template>
         </div>
       </div>
       <template #footer>
@@ -241,9 +292,9 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listScripts, listVersions, uploadVersion, publishScript, publishRecords, listGroups,
   getVersionFiles, uploadVersionEditor, deviceOptions, listTasks, createTask, updateTask, taskAction,
-  type UiTreeNode
+  deviceDebugTrigger, deviceDebugLatest, type UiTreeNode
 } from '../api'
-import { Aim, RefreshRight, VideoPlay, VideoPause } from '@element-plus/icons-vue'
+import { Aim, RefreshRight, VideoPlay, VideoPause, Search } from '@element-plus/icons-vue'
 import { connectStomp, subscribe } from '../ws/stomp'
 import CodeEditor from '../components/CodeEditor.vue'
 import FlowEditor from '../components/FlowEditor.vue'
@@ -251,7 +302,7 @@ import UiInspector from '../components/UiInspector.vue'
 import ConfigForm from '../components/ConfigForm.vue'
 import { parseCode } from '../editor/blocks/parse'
 import { genCode } from '../editor/blocks/codegen'
-import { SNIPPET_LABELS, snippetCode, snippetBlock, suggestSelector, type SnippetKind } from '../editor/snippets'
+import { SNIPPET_LABELS, snippetCode, snippetBlock, suggestSelector, appLaunchCode, appLaunchBlockOf, tapPointCode, tapPointBlockOf, type SnippetKind } from '../editor/snippets'
 import type { Block } from '../editor/blocks/types'
 
 const route = useRoute()
@@ -328,6 +379,55 @@ const onlineDevices = ref<any[]>([])
 const inspectorDeviceId = ref<number | null>(null)
 const inspectorNode = ref<UiTreeNode | null>(null)
 const devicesLoading = ref(false)
+/** 面板视图：ui=控件检索（截图/树/取坐标），apps=应用列表（插「打开APP」） */
+const inspectorMode = ref<'ui' | 'apps'>('ui')
+/** 取坐标模式拾取的屏幕点 */
+const inspectorPoint = ref<{ x: number; y: number } | null>(null)
+/** 应用列表 */
+const appsList = ref<{ pkg: string; label?: string }[]>([])
+const appKw = ref('')
+const selectedApp = ref<{ pkg: string; label?: string } | null>(null)
+const appsLoading = ref(false)
+
+// 切设备后旧数据全部失效
+watch(inspectorDeviceId, () => {
+  inspectorNode.value = null
+  inspectorPoint.value = null
+  appsList.value = []
+  selectedApp.value = null
+})
+
+const filteredApps = computed(() => {
+  const k = appKw.value.trim().toLowerCase()
+  if (!k) return appsList.value
+  return appsList.value.filter(a =>
+    a.pkg.toLowerCase().includes(k) || (a.label || '').toLowerCase().includes(k))
+})
+
+/** 从设备拉取已安装应用列表：触发指令后轮询 latest 缓存直到新数据到达（8s 超时） */
+const loadApps = async () => {
+  if (!inspectorDeviceId.value) return ElMessage.warning('请先选择设备')
+  appsLoading.value = true
+  try {
+    const before: any = await deviceDebugLatest(inspectorDeviceId.value, 'apps').catch(() => null)
+    const beforeTs = before?.ts || 0
+    await deviceDebugTrigger(inspectorDeviceId.value, 'apps')
+    const deadline = Date.now() + 8000
+    let ok = false
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 500))
+      const cur: any = await deviceDebugLatest(inspectorDeviceId.value, 'apps').catch(() => null)
+      if (cur?.ts && cur.ts > beforeTs && cur.data?.apps) {
+        appsList.value = cur.data.apps
+        ok = true
+        break
+      }
+    }
+    if (!ok) ElMessage.warning('设备未返回应用列表：请确认设备在线且引擎已连接')
+  } finally {
+    appsLoading.value = false
+  }
+}
 
 // 每个文件对应的 CodeEditor 实例（插码定位到当前激活文件的光标）
 const editorRefs = new Map<string, any>()
@@ -363,25 +463,42 @@ const availableKinds = computed(() => {
   )
 })
 
-/** 插码：图形模式追加流程块（并同步回代码），代码模式插入当前激活 .js 文件光标处 */
-const insertSnippet = (kind: SnippetKind) => {
-  const node = inspectorNode.value
-  if (!node) return
+/** 通用插码：图形模式追加流程块（并同步回代码），代码模式插入当前激活 .js 文件光标处 */
+const insertRaw = (code: string | null, block: Block | null, label: string) => {
   if (editorMode.value === 'flow' && activeFile.value === 'main.js') {
-    const block = snippetBlock(kind, node)
     if (!block) return ElMessage.warning('该片段没有对应流程块，请切到代码模式插入')
     flowBlocks.value.push(block)
     syncFlowToCode()
-    ElMessage.success(`已追加「${SNIPPET_LABELS[kind]}」流程块`)
+    ElMessage.success(`已追加「${label}」流程块`)
     return
   }
   const name = activeFile.value
   if (!name.endsWith('.js')) return ElMessage.warning('仅支持插入到 .js 文件')
-  const code = snippetCode(kind, node)
   if (!code) return ElMessage.warning('该控件缺少可用信息（无 id/text/desc 或坐标）')
   const inst = editorRefs.get(name)
   if (!inst || !inst.insertAtCursor(code)) return ElMessage.warning('编辑器未就绪，请稍后重试')
   ElMessage.success(`已插入 ${name} 光标处`)
+}
+
+/** 插码：选中控件 → 片段族（等待并点击/坐标点击/输入文本/仅选择器/存在判断） */
+const insertSnippet = (kind: SnippetKind) => {
+  const node = inspectorNode.value
+  if (!node) return
+  insertRaw(snippetCode(kind, node), snippetBlock(kind, node), SNIPPET_LABELS[kind])
+}
+
+/** 插码：取坐标模式拾取的任意屏幕点 */
+const insertPoint = () => {
+  const p = inspectorPoint.value
+  if (!p) return
+  insertRaw(tapPointCode(p.x, p.y), tapPointBlockOf(p.x, p.y), '坐标点击')
+}
+
+/** 插码：应用列表选中的包名 */
+const insertApp = () => {
+  const a = selectedApp.value
+  if (!a) return
+  insertRaw(appLaunchCode(a.pkg), appLaunchBlockOf(a.pkg), '打开APP')
 }
 
 // ---------- 调试运行（编辑器一键跑：自动存版本 → 复用调试任务 → 下发设备 → 实时日志） ----------
@@ -544,6 +661,10 @@ const openEditorVersion = async (row: any) => {
     flowBlocks.value = []
     configMode.value = 'form'
     inspectorOpen.value = false
+    inspectorMode.value = 'ui'
+    inspectorPoint.value = null
+    appsList.value = []
+    selectedApp.value = null
     editorDlg.value = true
   } catch { /* 拦截器已提示 */ }
 }
@@ -577,6 +698,10 @@ const openEditorNew = async () => {
   flowBlocks.value = []
   configMode.value = 'form'
   inspectorOpen.value = false
+  inspectorMode.value = 'ui'
+  inspectorPoint.value = null
+  appsList.value = []
+  selectedApp.value = null
   editorDlg.value = true
 }
 
@@ -774,6 +899,33 @@ onMounted(async () => {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px dashed var(--el-border-color);
+}
+.apps-list {
+  max-height: 460px;
+  overflow-y: auto;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+}
+.app-item {
+  padding: 7px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
+}
+.app-item:hover {
+  background: #f0f2fb;
+}
+.app-item.active {
+  background: #e8ecfd;
+}
+.app-label {
+  font-size: 13px;
+  color: #303133;
+}
+.app-pkg {
+  font-family: Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: #94a3b8;
+  word-break: break-all;
 }
 .insert-tip {
   font-size: 12px;

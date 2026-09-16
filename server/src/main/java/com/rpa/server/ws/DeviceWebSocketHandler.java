@@ -68,6 +68,7 @@ public class DeviceWebSocketHandler extends TextWebSocketHandler {
                 case "RESULT" -> taskControlService.handleResult(Long.parseLong(deviceId), msg.data);
                 case "DUMP_UI" -> deviceDebugService.handleUpstream(Long.parseLong(deviceId), "dump", msg.data);
                 case "CAPTURE" -> deviceDebugService.handleUpstream(Long.parseLong(deviceId), "capture", msg.data);
+                case "LIST_APPS" -> deviceDebugService.handleUpstream(Long.parseLong(deviceId), "apps", msg.data);
                 case "ACK" -> log.debug("device {} ack {}: ok={}", deviceId,
                         msg.data != null ? msg.data.get("refMsgId") : "?",
                         msg.data != null ? msg.data.get("ok") : "?");

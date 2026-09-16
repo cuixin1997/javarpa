@@ -155,6 +155,14 @@ public class MockDevice {
                     System.out.println("[mock] CMD_TAP x=" + extract(raw, "x") + " y=" + extract(raw, "y"));
                     ack(msgId, true, null);
                 }
+                case "CMD_LIST_APPS" -> {
+                    System.out.println("[mock] CMD_LIST_APPS");
+                    ack(msgId, true, null);
+                    send("LIST_APPS", "{\"refMsgId\":\"" + msgId + "\",\"count\":2,\"apps\":["
+                            + "{\"pkg\":\"com.android.calculator2\",\"label\":\"Calculator\"},"
+                            + "{\"pkg\":\"com.android.settings\",\"label\":\"Settings\"}]}");
+                    System.out.println("[mock] LIST_APPS sent (2 apps) ✓");
+                }
                 case "REGISTER_ACK" -> System.out.println("[mock] registered on server ✓");
                 default -> System.out.println("[mock] msg " + type);
             }

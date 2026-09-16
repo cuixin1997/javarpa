@@ -18,7 +18,8 @@ public class DeviceDebugService {
     private static final Map<String, String> KIND_TO_CMD = Map.of(
             "dump", "CMD_DUMP_UI",
             "capture", "CMD_CAPTURE",
-            "tap", "CMD_TAP");
+            "tap", "CMD_TAP",
+            "apps", "CMD_LIST_APPS");
 
     private final DeviceSessionManager sessionManager;
     private final AdminStompService stomp;
