@@ -17,10 +17,13 @@ android/local.properties
 web/node_modules/
 web/dist/
 
-# IDE
+# IDE / AI 助手本地状态
 .idea/
 *.iml
 .vscode/
+.qoder/
+.video_agent/
+.zcode/
 .DS_Store
 
 # Runtime data

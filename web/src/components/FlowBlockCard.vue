@@ -23,7 +23,10 @@
       </template>
 
       <el-form label-width="82px" size="small" class="blk-form">
-        <el-form-item v-for="p in def.params" :key="p.key" :label="p.label">
+        <el-form-item
+          v-for="p in def.params" :key="p.key" :label="p.label"
+          :error="p.required && isEmptyParam(block.params[p.key]) ? '必填，留空会生成无效代码' : ''"
+        >
           <el-select v-if="p.type === 'select'" v-model="block.params[p.key]" @change="emit('change')">
             <el-option v-for="o in p.options" :key="o.value" :label="o.label" :value="o.value" />
           </el-select>
@@ -84,7 +87,7 @@
 import { computed } from 'vue'
 import draggable from 'vuedraggable'
 import { CopyDocument, Delete } from '@element-plus/icons-vue'
-import { getBlockDef, cloneBlock } from '../editor/blocks/blockDefs'
+import { getBlockDefOrRaw, cloneBlock, isEmptyParam } from '../editor/blocks/blockDefs'
 import type { Block } from '../editor/blocks/types'
 import { BLOCK_ICONS, CATEGORY_COLORS } from '../editor/blocks/icons'
 
@@ -93,7 +96,7 @@ const emit = defineEmits<{ (e: 'change'): void; (e: 'remove'): void; (e: 'duplic
 
 const DRAG_GROUP = { name: 'blocks' }
 
-const def = computed(() => getBlockDef(props.block.type)!)
+const def = computed(() => getBlockDefOrRaw(props.block.type))
 const thenArr = computed(() => props.block.children?.then ?? [])
 const elseArr = computed(() => props.block.children?.else ?? [])
 const bodyArr = computed(() => props.block.children?.body ?? [])
@@ -103,7 +106,11 @@ function removeAt(arr: Block[], index: number) {
   emit('change')
 }
 function insertAfter(arr: Block[], index: number) {
-  arr.splice(index + 1, 0, cloneBlock(props.block))
+  // 必须复制分支里的这一块：props.block 是渲染该分支的结构块（if/循环）本身，
+  // 用它会把整个结构块深拷贝插进自己的分支，连点几次指数膨胀并写进 main.js
+  const target = arr[index]
+  if (!target) return
+  arr.splice(index + 1, 0, cloneBlock(target))
   emit('change')
 }
 </script>

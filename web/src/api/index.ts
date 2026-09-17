@@ -33,12 +33,34 @@ export interface TokenCreated {
   prefix: string
 }
 
-export interface TaskDetailResult {
+export interface TaskInfo {
   id: number
   name: string
   scriptId: number
   versionCode?: number | null
-  taskDevices: { deviceId: number; status: string; successCount: number; failCount: number }[]
+  paramsJson?: string | null
+  scheduleType: string
+  cronExpr?: string | null
+  maxRetries: number
+  status: number
+}
+
+export interface TaskDeviceRow {
+  deviceId: number
+  deviceSn: string
+  deviceName?: string | null
+  online: number
+  status: string
+  retryCount: number
+  successCount: number
+  failCount: number
+  lastRunAt?: string | null
+}
+
+/** 后端 /tasks/{id} 返回 {task, taskDevices, executions} 三段，不是扁平结构 */
+export interface TaskDetailResult {
+  task: TaskInfo
+  taskDevices: TaskDeviceRow[]
   executions: any[]
 }
 

@@ -62,7 +62,15 @@ function parseStatements(stmts: any[], src: string, comments: CommentNode[], ran
     }
 
     if (matched && def) {
-      const block: Block = { id: newBlockId(), ...matched.partial, ...(remark ? { remark } : {}) }
+      const spanEnd = stmts[i + matched.consumed - 1].end
+      // 复合匹配跨多条语句时，落在这些语句之间及其内部的注释既不在前导 remark 区间、
+      // 也不在尾部游离注释区间，不额外收集就会被静默丢弃
+      let fullRemark = remark
+      if (matched.consumed > 1) {
+        const inner = remarkBetween(comments, src, stmt.start, spanEnd)
+        if (inner) fullRemark = fullRemark ? `${fullRemark}\n${inner}` : inner
+      }
+      const block: Block = { id: newBlockId(), ...matched.partial, ...(fullRemark ? { remark: fullRemark } : {}) }
       if (matched.children) {
         const ch = block.children || (block.children = {})
         const sections = ['then', 'else', 'body'] as const
@@ -73,7 +81,7 @@ function parseStatements(stmts: any[], src: string, comments: CommentNode[], ran
       }
       blocks.push(block)
       i += matched.consumed
-      lastEnd = stmts[i - 1].end
+      lastEnd = spanEnd
     } else {
       blocks.push({ id: newBlockId(), type: 'raw', params: { code: src.slice(stmt.start, stmt.end) }, ...(remark ? { remark } : {}) })
       i += 1

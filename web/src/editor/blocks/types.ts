@@ -16,6 +16,8 @@ export interface ParamDef {
   options?: { label: string; value: string }[]
   default?: any
   placeholder?: string
+  /** 留空会生成语义无效代码（如 auto.launch("")）的参数，卡片内联报错并在保存前拦截 */
+  required?: boolean
 }
 
 /** 命令分类 */

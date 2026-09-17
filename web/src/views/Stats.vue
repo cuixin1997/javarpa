@@ -11,7 +11,7 @@
         style="width: 260px"
         :disabled-date="limitRange"
       />
-      <el-button type="primary" @click="load">查询</el-button>
+      <el-button type="primary" :loading="loading" @click="load">查询</el-button>
       <span style="color: #9aa3b8; font-size: 12px">默认最近 30 天</span>
     </div>
 
@@ -23,10 +23,10 @@
     </div>
 
     <el-card class="table-card" shadow="never">
-      <el-table :data="rows" stripe>
+      <el-table v-loading="loading" :data="rows" stripe>
       <el-table-column prop="taskId" label="任务ID" width="80" />
-      <el-table-column prop="taskName" label="任务名" min-width="140" />
-      <el-table-column prop="scriptName" label="脚本" min-width="120">
+      <el-table-column prop="taskName" label="任务名" min-width="140" show-overflow-tooltip />
+      <el-table-column prop="scriptName" label="脚本" min-width="120" show-overflow-tooltip>
         <template #default="{ row }">{{ row.scriptName || '-' }}</template>
       </el-table-column>
       <el-table-column prop="total" label="执行次数" width="100" />
@@ -50,9 +50,17 @@ import { statsByTask } from '../api'
 
 const range = ref<string[]>([])
 const rows = ref<any[]>([])
+const loading = ref(false)
+let reqId = 0
 
 // 限制最近 90 天，防止选到数年区间触发后端大范围聚合
-const limitRange = (d: Date) => d.getTime() > Date.now() || d.getTime() < Date.now() - 90 * 86400_000
+const limitRange = (d: Date) => {
+  if (d.getTime() > Date.now()) return true
+  // 下界对齐到当日 0 点：直接用 Date.now()-90d 会让午后访问时第 90 天被误判为过早
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return d.getTime() < today.getTime() - 89 * 86400_000
+}
 
 const totals = computed(() => {
   const t = rows.value.reduce((a, r) => ({
@@ -66,6 +74,7 @@ const totals = computed(() => {
 })
 
 const load = async () => {
+  const id = ++reqId
   const end = new Date()
   const start = new Date(Date.now() - 29 * 86400_000)
   // 本地时区格式化，避免 UTC 导致东八区"今天"少一天
@@ -73,7 +82,14 @@ const load = async () => {
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   const s = range.value?.[0] || fmt(start)
   const e = range.value?.[1] || fmt(end)
-  rows.value = await statsByTask(s, e)
+  loading.value = true
+  try {
+    const data: any = await statsByTask(s, e)
+    if (id !== reqId) return // 丢弃过期响应，防止连点查询时旧区间覆盖新结果
+    rows.value = data || []
+  } catch { /* 拦截器已提示 */ } finally {
+    if (id === reqId) loading.value = false
+  }
 }
 
 onMounted(load)

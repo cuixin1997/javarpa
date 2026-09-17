@@ -5,7 +5,8 @@
  * - emit 输出必须是可直接执行的 ES5 代码（无缩进，多行用 \n 分隔），且能被自己的
  *   matcher 原样识别（codegen↔parse 幂等，保证代码↔图形来回切换不漂移）；
  * - matcher 只匹配字面量参数的模式，非字面量/未识别语句一律降级为 raw 块原文保留；
- * - 复合块用固定变量名（__node/__img/__pt），var 重复声明合法，无需编号。
+ * - 复合块必须回读源码里的真实变量名（缺省才用 __node/__img/__pt）：写死固定名会把
+ *   用户的 var btn = ...findOne() 改写成 __node，后续引用 btn 的代码全部失效。
  */
 import type { Block, BlockDef, MatchCtx, MatchResult } from './types'
 
@@ -50,6 +51,16 @@ export const selectorCode = (mode: string, value: string) => `auto.${mode}(${JSO
 
 const J = (v: any) => JSON.stringify(v ?? '')
 
+/** 复合块变量名：回读源码里的真实名字；缺失或不是合法标识符时退回固定名，避免把任意文本注入代码 */
+const varOf = (v: any, fallback: string) => {
+  const s = String(v ?? '').trim()
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(s) ? s : fallback
+}
+
+/** 参数是否视为空（必填校验与保存前拦截共用） */
+export const isEmptyParam = (v: any) =>
+  v === '' || v == null || (typeof v === 'number' && !Number.isFinite(v))
+
 // ---------- 复合模式匹配工具（var + if 判空族） ----------
 
 /** var v = SEL.findOne(T); 语句 → { varName, mode, value, timeout } */
@@ -84,17 +95,29 @@ const selectorParams = [
     { label: '控件 ID', value: 'id' },
     { label: '描述内容', value: 'desc' }
   ] },
-  { key: 'value', label: '匹配值', type: 'string' as const, default: '', placeholder: '如 登录 / btn_ok' },
-  { key: 'timeout', label: '超时(ms)', type: 'number' as const, default: 8000 }
+  { key: 'value', label: '匹配值', type: 'string' as const, default: '', placeholder: '如 登录 / btn_ok', required: true },
+  { key: 'timeout', label: '超时(ms)', type: 'number' as const, default: 8000, required: true }
 ]
 
 // ---------- 命令定义 ----------
+
+/** 自定义代码块：未识别语句原文保留，也是未知类型块的兜底展示形态 */
+const RAW_DEF: BlockDef = {
+  type: 'raw', name: '自定义代码', category: 'other', icon: 'Document',
+  desc: '无法图形化的 JS 代码原文保留；也可以用它在流程中插入任意逻辑',
+  params: [{ key: 'code', label: 'JS 代码', type: 'code', default: '' }],
+  emit: b => String(b.params.code || ''),
+  summary: () => ''
+}
+
+/** 渲染兜底：未知 type 退化成一张标明类型的卡，避免卡片模板对 undefined 取属性把整棵流程树渲染崩掉 */
+const UNKNOWN_DEF: BlockDef = { ...RAW_DEF, name: '未识别的流程块', summary: b => String(b.type || '') }
 
 export const BLOCK_DEFS: BlockDef[] = [
   // ===== 应用操作 =====
   {
     type: 'launch', name: '打开APP', category: 'app', icon: 'Cellphone', desc: '按包名启动应用，未安装返回 false',
-    params: [{ key: 'pkg', label: '应用包名', type: 'string', default: '', placeholder: '如 com.tencent.mm' }],
+    params: [{ key: 'pkg', label: '应用包名', type: 'string', default: '', placeholder: '如 com.tencent.mm', required: true }],
     emit: b => `auto.launch(${J(b.params.pkg)});`,
     summary: b => String(b.params.pkg || ''),
     match: ({ stmts, index }) => {
@@ -128,7 +151,7 @@ export const BLOCK_DEFS: BlockDef[] = [
   // ===== 控件操作 =====
   {
     type: 'clickText', name: '点击文本', category: 'widget', icon: 'Pointer', desc: '等价 text().findOne(8000) 后点击',
-    params: [{ key: 'text', label: '控件文本', type: 'string', default: '', placeholder: '如 登录' }],
+    params: [{ key: 'text', label: '控件文本', type: 'string', default: '', placeholder: '如 登录', required: true }],
     emit: b => `auto.clickText(${J(b.params.text)});`,
     summary: b => `「${b.params.text || ''}」`,
     match: ({ stmts, index }) => {
@@ -140,7 +163,7 @@ export const BLOCK_DEFS: BlockDef[] = [
   },
   {
     type: 'clickId', name: '点击控件(ID)', category: 'widget', icon: 'Pointer', desc: '等价 id().findOne(8000) 后点击',
-    params: [{ key: 'id', label: '控件 ID', type: 'string', default: '', placeholder: '如 btn_ok' }],
+    params: [{ key: 'id', label: '控件 ID', type: 'string', default: '', placeholder: '如 btn_ok', required: true }],
     emit: b => `auto.clickId(${J(b.params.id)});`,
     summary: b => `#${b.params.id || ''}`,
     match: ({ stmts, index }) => {
@@ -153,24 +176,32 @@ export const BLOCK_DEFS: BlockDef[] = [
   {
     type: 'findClick', name: '等待控件并点击', category: 'widget', icon: 'Aim', desc: '轮询等待控件出现后点击，超时跳过',
     params: selectorParams,
-    emit: b => `var __node = ${selectorCode(b.params.mode, b.params.value)}.findOne(${Number(b.params.timeout) || 0});\nif (__node) { __node.click(); }`,
+    emit: b => {
+      const v = varOf(b.params.varName, '__node')
+      return `var ${v} = ${selectorCode(b.params.mode, b.params.value)}.findOne(${Number(b.params.timeout) || 0});\nif (${v}) { ${v}.click(); }`
+    },
     summary: b => `${modeLabel(b.params.mode)}「${b.params.value || ''}」 ${(Number(b.params.timeout) || 0) + 'ms'}`,
-    match: ({ stmts, index, src }) => {
+    match: ({ stmts, index }) => {
       const decl = findOneDecl(stmts[index])
       if (!decl) return null
       const guard = guardedCall(stmts[index + 1], decl.varName)
       if (guard?.method !== 'click' || guard.args.length !== 0) return null
-      void src
       return {
-        partial: { type: 'findClick', params: { mode: decl.mode, value: decl.value, timeout: decl.timeout } },
+        partial: {
+          type: 'findClick',
+          params: { mode: decl.mode, value: decl.value, timeout: decl.timeout, varName: decl.varName }
+        },
         consumed: 2
       }
     }
   },
   {
     type: 'findInput', name: '找到控件并输入', category: 'widget', icon: 'EditPen', desc: '等待控件出现后清空并输入文本，超时跳过',
-    params: [...selectorParams, { key: 'text', label: '输入内容', type: 'string', default: '', placeholder: '要输入的文本' }],
-    emit: b => `var __node = ${selectorCode(b.params.mode, b.params.value)}.findOne(${Number(b.params.timeout) || 0});\nif (__node) { __node.input(${J(b.params.text)}); }`,
+    params: [...selectorParams, { key: 'text', label: '输入内容', type: 'string', default: '', placeholder: '要输入的文本', required: true }],
+    emit: b => {
+      const v = varOf(b.params.varName, '__node')
+      return `var ${v} = ${selectorCode(b.params.mode, b.params.value)}.findOne(${Number(b.params.timeout) || 0});\nif (${v}) { ${v}.input(${J(b.params.text)}); }`
+    },
     summary: b => `${modeLabel(b.params.mode)}「${b.params.value || ''}」→ ${b.params.text || ''}`,
     match: ({ stmts, index }) => {
       const decl = findOneDecl(stmts[index])
@@ -180,7 +211,10 @@ export const BLOCK_DEFS: BlockDef[] = [
       const text = litStr(guard.args[0])
       if (text === null) return null
       return {
-        partial: { type: 'findInput', params: { mode: decl.mode, value: decl.value, timeout: decl.timeout, text } },
+        partial: {
+          type: 'findInput',
+          params: { mode: decl.mode, value: decl.value, timeout: decl.timeout, text, varName: decl.varName }
+        },
         consumed: 2
       }
     }
@@ -188,8 +222,8 @@ export const BLOCK_DEFS: BlockDef[] = [
   {
     type: 'tap', name: '坐标点击', category: 'widget', icon: 'Position', desc: '点击屏幕绝对坐标（约 50ms 手势）',
     params: [
-      { key: 'x', label: 'X 坐标', type: 'number', default: 540 },
-      { key: 'y', label: 'Y 坐标', type: 'number', default: 1200 }
+      { key: 'x', label: 'X 坐标', type: 'number', default: 540, required: true },
+      { key: 'y', label: 'Y 坐标', type: 'number', default: 1200, required: true }
     ],
     emit: b => `auto.tap(${Number(b.params.x) || 0}, ${Number(b.params.y) || 0});`,
     summary: b => `(${b.params.x}, ${b.params.y})`,
@@ -203,13 +237,13 @@ export const BLOCK_DEFS: BlockDef[] = [
   {
     type: 'swipe', name: '滑动', category: 'widget', icon: 'TopRight', desc: '从 (x1,y1) 滑动到 (x2,y2)',
     params: [
-      { key: 'x1', label: '起点 X', type: 'number', default: 540 },
-      { key: 'y1', label: '起点 Y', type: 'number', default: 1600 },
-      { key: 'x2', label: '终点 X', type: 'number', default: 540 },
-      { key: 'y2', label: '终点 Y', type: 'number', default: 400 },
-      { key: 'duration', label: '时长(ms)', type: 'number', default: 300 }
+      { key: 'x1', label: '起点 X', type: 'number', default: 540, required: true },
+      { key: 'y1', label: '起点 Y', type: 'number', default: 1600, required: true },
+      { key: 'x2', label: '终点 X', type: 'number', default: 540, required: true },
+      { key: 'y2', label: '终点 Y', type: 'number', default: 400, required: true },
+      { key: 'duration', label: '时长(ms)', type: 'number', default: 300, required: true }
     ],
-    emit: b => `auto.swipe(${b.params.x1}, ${b.params.y1}, ${b.params.x2}, ${b.params.y2}, ${Number(b.params.duration) || 300});`,
+    emit: b => `auto.swipe(${Number(b.params.x1) || 0}, ${Number(b.params.y1) || 0}, ${Number(b.params.x2) || 0}, ${Number(b.params.y2) || 0}, ${Number(b.params.duration) || 300});`,
     summary: b => `(${b.params.x1},${b.params.y1})→(${b.params.x2},${b.params.y2})`,
     match: ({ stmts, index }) => {
       const c = callStmt(stmts[index])
@@ -227,7 +261,7 @@ export const BLOCK_DEFS: BlockDef[] = [
   // ===== 等待延时 =====
   {
     type: 'sleep', name: '延时等待', category: 'wait', icon: 'Timer', desc: '睡眠指定毫秒，期间可被云端停止',
-    params: [{ key: 'ms', label: '等待(ms)', type: 'number', default: 1000 }],
+    params: [{ key: 'ms', label: '等待(ms)', type: 'number', default: 1000, required: true }],
     emit: b => `sleep(${Number(b.params.ms) || 0});`,
     summary: b => `${b.params.ms}ms`,
     match: ({ stmts, index }) => {
@@ -278,10 +312,14 @@ export const BLOCK_DEFS: BlockDef[] = [
   {
     type: 'findImageTap', name: '找图并点击', category: 'image', icon: 'PictureFilled', desc: '截图后模板匹配，找到则点击模板左上角坐标',
     params: [
-      { key: 'image', label: '模板路径', type: 'string', default: '', placeholder: '包内相对路径，如 res/btn.png' },
-      { key: 'threshold', label: '容差', type: 'number', default: 10 }
+      { key: 'image', label: '模板路径', type: 'string', default: '', placeholder: '包内相对路径，如 res/btn.png', required: true },
+      { key: 'threshold', label: '容差', type: 'number', default: 10, required: true }
     ],
-    emit: b => `var __img = auto.screenshot();\nif (__img) { var __pt = __img.findImage(${J(b.params.image)}, ${Number(b.params.threshold) || 0}); if (__pt) { auto.tap(__pt.x, __pt.y); } }`,
+    emit: b => {
+      const img = varOf(b.params.imgVar, '__img')
+      const pt = varOf(b.params.ptVar, '__pt')
+      return `var ${img} = auto.screenshot();\nif (${img}) { var ${pt} = ${img}.findImage(${J(b.params.image)}, ${Number(b.params.threshold) || 0}); if (${pt}) { auto.tap(${pt}.x, ${pt}.y); } }`
+    },
     summary: b => `${b.params.image || ''} @${b.params.threshold}`,
     match: ({ stmts, index }) => {
       const r = matchFindX(stmts, index, 'findImage')
@@ -291,10 +329,14 @@ export const BLOCK_DEFS: BlockDef[] = [
   {
     type: 'findColorTap', name: '找色并点击', category: 'image', icon: 'MagicStick', desc: '截图后全屏找色，找到则点击该点',
     params: [
-      { key: 'color', label: '颜色值', type: 'string', default: '#FF0000', placeholder: '#RRGGBB' },
-      { key: 'threshold', label: '容差', type: 'number', default: 5 }
+      { key: 'color', label: '颜色值', type: 'string', default: '#FF0000', placeholder: '#RRGGBB', required: true },
+      { key: 'threshold', label: '容差', type: 'number', default: 5, required: true }
     ],
-    emit: b => `var __img = auto.screenshot();\nif (__img) { var __pt = __img.findColor(${J(b.params.color)}, ${Number(b.params.threshold) || 0}); if (__pt) { auto.tap(__pt.x, __pt.y); } }`,
+    emit: b => {
+      const img = varOf(b.params.imgVar, '__img')
+      const pt = varOf(b.params.ptVar, '__pt')
+      return `var ${img} = auto.screenshot();\nif (${img}) { var ${pt} = ${img}.findColor(${J(b.params.color)}, ${Number(b.params.threshold) || 0}); if (${pt}) { auto.tap(${pt}.x, ${pt}.y); } }`
+    },
     summary: b => `${b.params.color || ''} @${b.params.threshold}`,
     match: ({ stmts, index }) => {
       const r = matchFindX(stmts, index, 'findColor')
@@ -325,7 +367,7 @@ export const BLOCK_DEFS: BlockDef[] = [
   },
   {
     type: 'reportOkN', name: '成功计数+N', category: 'report', icon: 'CirclePlusFilled', desc: '业务成功计数 +n',
-    params: [{ key: 'n', label: '增加数量', type: 'number', default: 1 }],
+    params: [{ key: 'n', label: '增加数量', type: 'number', default: 1, required: true }],
     emit: b => `auto.report.okN(${Number(b.params.n) || 0});`,
     summary: b => `+${b.params.n}`,
     match: ({ stmts, index }) => {
@@ -337,7 +379,7 @@ export const BLOCK_DEFS: BlockDef[] = [
   },
   {
     type: 'reportFailN', name: '失败计数+N', category: 'report', icon: 'RemoveFilled', desc: '业务失败计数 +n',
-    params: [{ key: 'n', label: '增加数量', type: 'number', default: 1 }],
+    params: [{ key: 'n', label: '增加数量', type: 'number', default: 1, required: true }],
     emit: b => `auto.report.failN(${Number(b.params.n) || 0});`,
     summary: b => `+${b.params.n}`,
     match: ({ stmts, index }) => {
@@ -376,12 +418,18 @@ export const BLOCK_DEFS: BlockDef[] = [
     type: 'forN', name: '循环 N 次', category: 'flow', icon: 'Refresh', structure: 'loop',
     desc: '标准 for 计数循环（var i = 0; i < N; i++）',
     params: [
-      { key: 'count', label: '循环次数', type: 'number', default: 10 },
+      { key: 'count', label: '循环次数', type: 'number', default: 10, required: true },
       { key: 'varName', label: '变量名', type: 'string', default: 'i' },
       { key: 'from', label: '起始值', type: 'number', default: 0 }
     ],
     emit: b => `for (var ${String(b.params.varName || 'i').trim() || 'i'} = ${Number(b.params.from) || 0}; ${String(b.params.varName || 'i').trim() || 'i'} < ${Number(b.params.count) || 0}; ${String(b.params.varName || 'i').trim() || 'i'}++) {`,
-    summary: b => `${b.params.count} 次`,
+    // count 是循环上界不是次数：from≠0 时直接显示 count 会与真实执行次数不符
+    summary: b => {
+      const from = Number(b.params.from) || 0
+      const to = Number(b.params.count) || 0
+      const times = Math.max(0, to - from)
+      return from ? `${times} 次（${from} 到 ${to - 1}）` : `${times} 次`
+    },
     match: ({ stmts, index }) => {
       const s = stmts[index]
       if (s?.type !== 'ForStatement') return null
@@ -423,7 +471,8 @@ export const BLOCK_DEFS: BlockDef[] = [
     }
   },
   {
-    type: 'stopScript', name: '停止脚本', category: 'flow', icon: 'CircleClose', desc: '标记结束：脚本跑到自然结束，结果记 STOPPED',
+    type: 'stopScript', name: '停止脚本', category: 'flow', icon: 'CircleClose',
+    desc: '立即中止：约 1 万条指令内抛出停止异常（try/catch 拦不住），结果记 STOPPED，后续语句不再执行',
     params: [],
     emit: () => 'auto.stop();',
     summary: () => '',
@@ -434,13 +483,7 @@ export const BLOCK_DEFS: BlockDef[] = [
   },
 
   // ===== 其他 =====
-  {
-    type: 'raw', name: '自定义代码', category: 'other', icon: 'Document',
-    desc: '无法图形化的 JS 代码原文保留；也可以用它在流程中插入任意逻辑',
-    params: [{ key: 'code', label: 'JS 代码', type: 'code', default: '' }],
-    emit: b => String(b.params.code || ''),
-    summary: () => ''
-  }
+  RAW_DEF
 ]
 
 function modeLabel(mode: string): string {
@@ -449,9 +492,10 @@ function modeLabel(mode: string): string {
 
 /**
  * 匹配「var img = auto.screenshot(); if (img) { var p = img.findXxx(litS, litN); if (p) { auto.tap(p.x, p.y); } }」
- * findImage → { image, threshold }；findColor → { color, threshold }
+ * findImage → { image, threshold }；findColor → { color, threshold }；两者都带回 imgVar/ptVar 供 emit 复用
  */
-function matchFindX(stmts: any[], index: number, method: 'findImage' | 'findColor'): { image?: string; color?: string; threshold: number } | null {
+function matchFindX(stmts: any[], index: number, method: 'findImage' | 'findColor'):
+  { image?: string; color?: string; threshold: number; imgVar: string; ptVar: string } | null {
   const decl = stmts[index]
   if (decl?.type !== 'VariableDeclaration' || decl.declarations.length !== 1) return null
   const d = decl.declarations[0]
@@ -483,9 +527,11 @@ function matchFindX(stmts: any[], index: number, method: 'findImage' | 'findColo
   const [ax, ay] = tap.arguments
   const isPt = (a: any, axis: string) => a?.type === 'MemberExpression' && !a.computed && a.object.type === 'Identifier' && a.object.name === dd.id.name && a.property.name === axis
   if (!isPt(ax, 'x') || !isPt(ay, 'y')) return null
-  if (ifInner.alternate) return null
 
-  return method === 'findImage' ? { image: target, threshold } : { color: target, threshold }
+  const ptVar = dd.id.name
+  return method === 'findImage'
+    ? { image: target, threshold, imgVar, ptVar }
+    : { color: target, threshold, imgVar, ptVar }
 }
 
 // ---------- 注册表 ----------
@@ -493,6 +539,29 @@ function matchFindX(stmts: any[], index: number, method: 'findImage' | 'findColo
 const DEF_MAP = new Map(BLOCK_DEFS.map(d => [d.type, d]))
 
 export const getBlockDef = (type: string): BlockDef | undefined => DEF_MAP.get(type)
+
+/** 渲染用：未知 type 退回兜底定义，避免调用方拿到 undefined 后取属性抛错 */
+export const getBlockDefOrRaw = (type: string): BlockDef => DEF_MAP.get(type) ?? UNKNOWN_DEF
+
+/** 深度优先找出第一个必填参数为空的块，返回中文提示；保存前拦截明显跑不通的脚本 */
+export function findMissingParam(blocks: Block[]): string | null {
+  for (const b of blocks) {
+    const def = DEF_MAP.get(b.type)
+    if (def) {
+      for (const p of def.params) {
+        if (p.required && isEmptyParam(b.params[p.key])) return `「${def.name}」的${p.label}不能为空`
+      }
+    }
+    for (const key of ['then', 'else', 'body'] as const) {
+      const sub = b.children?.[key]
+      if (sub?.length) {
+        const r = findMissingParam(sub)
+        if (r) return r
+      }
+    }
+  }
+  return null
+}
 
 let idSeq = 0
 export const newBlockId = () => `b${Date.now().toString(36)}${(++idSeq).toString(36)}${Math.random().toString(36).slice(2, 5)}`

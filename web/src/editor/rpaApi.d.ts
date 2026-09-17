@@ -200,7 +200,7 @@ declare const auto: {
   isPaused(): boolean;
   /** 暂停检查点：暂停时阻塞；被停止时抛异常结束。长循环体内必须周期调用 */
   waitIfPaused(): void;
-  /** 仅标记结束：脚本跑到自然结束，结果记 STOPPED（不触发重试） */
+  /** 立即中止：约 1 万条指令内抛出停止异常（try/catch 拦不住），结果记 STOPPED（不触发重试），后续语句不再执行 */
   stop(): void;
   /** 业务计数上报 */
   readonly report: ReportApi;

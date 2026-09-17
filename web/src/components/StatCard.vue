@@ -4,9 +4,9 @@
       <el-icon :size="22"><component :is="icon" /></el-icon>
     </div>
     <div class="stat-body">
-      <div class="stat-label">{{ title }}</div>
-      <div class="stat-value num">{{ value }}</div>
-      <div v-if="sub" class="stat-sub">{{ sub }}</div>
+      <div class="stat-label" :title="title">{{ title }}</div>
+      <div class="stat-value num" :title="String(value)">{{ value }}</div>
+      <div v-if="sub" class="stat-sub" :title="sub">{{ sub }}</div>
     </div>
   </div>
 </template>
@@ -56,6 +56,8 @@ defineProps<{
   color: #7c869c;
   font-size: 13px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .stat-value {
   font-size: 26px;
@@ -63,6 +65,8 @@ defineProps<{
   line-height: 1.3;
   color: #1e2438;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .stat-sub {
   color: #9aa3b8;

@@ -166,7 +166,7 @@ cd my-script && zip -r ../v1.zip main.js config.json res/
         │ │
         │ ├──JS抛异常/运行错误──────→ FAILED ──(未超过 maxRetries)──→ 自动重发 START
         │ │
-        │ ├──auto.stop() 标记后结束─→ STOPPED
+        │ ├──auto.stop() 中止脚本───→ STOPPED
         │ └──云端"停止"/线程中断────→ STOPPED
         └──云端"暂停"→ 脚本在下个 waitIfPaused() 检查点阻塞 → "重启"/"启动"后继续
 ```
@@ -175,7 +175,7 @@ cd my-script && zip -r ../v1.zip main.js config.json res/
 |----------|---------|-----------------|
 | 脚本跑完最后一条语句 | `SUCCESS` | 否 |
 | 抛出异常（`throw` / 调用错误） | `FAILED`，异常信息进入执行记录 | 是（按任务 `maxRetries` 整脚本重跑） |
-| 云端停止 / `auto.stop()` 结束 | `STOPPED` | 否 |
+| 云端停止 / `auto.stop()` 中止 | `STOPPED` | 否 |
 | 设备离线/引擎被杀 | 状态停留在 RUNNING，心跳超时判离线 | 重连后可再下发 |
 
 ### 4.3 心跳与进度
@@ -253,6 +253,7 @@ log("建议对象转字符串:", JSON.stringify(params));
 | `node.id()` | String | 完整 viewId（如 `com.xx:id/btn_ok`） |
 | `node.rect()` | `{x, y, width, height, centerX, centerY}` | 屏幕坐标 |
 | `node.exists()` | boolean | 恒可用于判空习惯写法 |
+| `node.close()` | void | 释放节点（API<33 有效）；长任务批量取节点后建议调用，避免节点池耗尽 |
 
 ### 5.3 手势与系统操作
 
@@ -311,7 +312,7 @@ if (!img) throw new Error("截图失败：需 Android 11+ 且无障碍已开启"
 |------|------|
 | `auto.waitIfPaused()` | **暂停检查点**：被暂停时阻塞在此，恢复后继续；被停止时抛出中断。长循环内应周期调用 |
 | `auto.isPaused()` | 当前是否处于暂停 |
-| `auto.stop()` | 标记结束：脚本**继续执行到自然结束**，结果记为 `STOPPED`（不触发重试）。需"立刻中止"请 `throw new Error("...")` 或靠 `sleep` 中断 |
+| `auto.stop()` | **立即中止**：约 1 万条指令内抛出停止异常，结果记为 `STOPPED`（不触发重试）。抛出后检查阈值降为 1，脚本层 `try/catch` 也拦不住，后续语句不再执行 |
 | `auto.isAccessibilityOn()` | 无障碍服务是否已开启（脚本开头自检并 log 提示） |
 
 > `sleep()` 期间可被**停止**（线程中断，在最近的 sleep 点退出）；而**暂停**只会在 `waitIfPaused()` 检查点生效——未写检查点的脚本被暂停时会继续跑到自然结束。因此长循环脚本务必周期调用 `auto.waitIfPaused()`。
@@ -329,11 +330,13 @@ if (!img) throw new Error("截图失败：需 Android 11+ 且无障碍已开启"
 auto.launch("com.example.app");
 sleep(3000);
 
-var account = auto.type("android.widget.EditText").findOne(8000);
+var account = auto.id("account").findOne(8000);
 if (!account) throw new Error("账号输入框未出现");
 account.input(params.username);
 
-var pwd = auto.type("android.widget.EditText").findAll()[1];   // 第二个输入框
+// 选择器必须从 auto.text/textContains/id/desc 起手，.type() 只能链式追加（没有 auto.type()）
+var pwd = auto.id("password").findOne(3000);
+if (!pwd) pwd = auto.textContains("密码").type("android.widget.EditText").findOne(2000);
 if (pwd) pwd.input(params.password);
 
 if (auto.clickText("登录")) {
@@ -548,8 +551,8 @@ for (var i = 1; i <= TOTAL; i++) {
 **Q3：一台设备能同时跑几个任务？**
 一个。新任务启动会先停掉旧任务（云端也有同样的互斥控制）。
 
-**Q4：为什么 `auto.stop()` 之后脚本还在跑？**
-`stop()` 只是标记"结果记为 STOPPED"，不中断执行流；需要立即中止请 `throw`（但会记为 FAILED 且可能触发重试）或由云端下发"停止"（线程中断，在最近的 sleep/等待点退出，记为 STOPPED）。
+**Q4：`auto.stop()`、`throw`、云端"停止"三者有什么区别？**
+`auto.stop()` 置停止标志，引擎的指令观察器约每 1 万条指令检查一次并抛出停止异常中止脚本，结果记 `STOPPED`、不触发重试；抛出后检查阈值降为 1，脚本里的 `try/catch` 也吞不掉。`throw` 立即中止但记 `FAILED`，会按 `maxRetries` 整脚本重跑。云端"停止"等价于 `auto.stop()` 加线程中断，`sleep`/找图扫描等阻塞点会更快退出。
 
 **Q5：脚本最长能跑多久？**
 无硬限制。长驻脚本务必：循环 + `sleep` + `auto.waitIfPaused()`，保证可被云端管控；心跳超时（90s 无心跳）会被判离线。
@@ -614,7 +617,7 @@ auto.report.ok() / .fail() / .okN(n) / .failN(n)
 auto.report.getOk() / .getFail()
 auto.waitIfPaused()       // 暂停检查点
 auto.isPaused() / auto.isAccessibilityOn()
-auto.stop()               // 标记结束(结果=STOPPED)
+auto.stop()               // 立即中止(结果=STOPPED，try/catch 拦不住)
 
 // ── device ──────────────────────────────
 device.width / device.height

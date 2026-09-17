@@ -18,7 +18,12 @@
           </el-radio-group>
         </div>
       </template>
-      <div ref="chartEl" style="height: 330px" />
+      <div v-loading="chartLoading" class="chart-box">
+        <div ref="chartEl" class="chart" />
+        <div v-if="!trend.length && !chartLoading" class="chart-empty">
+          <el-empty description="所选区间内暂无执行数据" :image-size="80" />
+        </div>
+      </div>
     </el-card>
 
     <el-row :gutter="16" style="margin-top: 16px">
@@ -63,8 +68,11 @@ const summary = ref<any>({})
 const trend = ref<any[]>([])
 const days = ref(7)
 const chartEl = ref<HTMLElement>()
+const alive = ref(true)
+const chartLoading = ref(false)
 let chart: echarts.ECharts | null = null
 let trendReqId = 0
+let resizeOb: ResizeObserver | null = null
 
 const quicks = [
   { path: '/scripts', title: '上传脚本', icon: Files, gradient: 'grad-indigo' },
@@ -75,13 +83,19 @@ const quicks = [
   { path: '/stats', title: '数据统计', icon: DataAnalysis, gradient: 'grad-rose' }
 ]
 
+/** 后端可能返回 100.0 这类带小数位的百分比，整数时不显示多余的 .0 */
+const pct = (v: any) => {
+  if (v == null || v === '') return '-'
+  const n = Math.round(Number(v) * 10) / 10
+  if (!Number.isFinite(n)) return '-'
+  return `${Number.isInteger(n) ? n.toFixed(0) : n}%`
+}
+
 const onlineRate = computed(() => {
   const total = summary.value.deviceTotal || 0
-  return total ? Math.round((summary.value.deviceOnline / total) * 100) + '%' : '-'
+  return total ? pct((summary.value.deviceOnline / total) * 100) : '-'
 })
-const successRate = computed(() =>
-  summary.value.todaySuccessRate == null ? '-' : summary.value.todaySuccessRate + '%'
-)
+const successRate = computed(() => pct(summary.value.todaySuccessRate))
 
 const renderChart = () => {
   if (!alive.value || !chartEl.value) return // 组件已卸载则不再渲染，防止泄漏新实例
@@ -130,29 +144,37 @@ const renderChart = () => {
 
 const loadTrend = async () => {
   const reqId = ++trendReqId
-  const data = await statsTrend(days.value)
-  if (reqId !== trendReqId) return // 丢弃过期响应，防止快速切换 7/14/30 天时旧数据覆盖
-  trend.value = data
-  renderChart()
+  chartLoading.value = true
+  try {
+    const data: any = await statsTrend(days.value)
+    if (reqId !== trendReqId || !alive.value) return // 丢弃过期响应，防止快速切换 7/14/30 天时旧数据覆盖
+    trend.value = data || []
+    renderChart()
+  } catch { /* 拦截器已提示 */ } finally {
+    if (reqId === trendReqId) chartLoading.value = false
+  }
 }
 
-const onResize = () => chart?.resize()
-
 onMounted(() => {
-  // 同步注册监听，避免 await 期间切走页面导致监听器泄漏
-  window.addEventListener('resize', onResize)
+  // 侧栏折叠不触发 window resize，只监听 window 会让图表宽度对不上容器；
+  // ResizeObserver 一并覆盖窗口缩放、侧栏折叠与卡片宽度变化
+  if (chartEl.value) {
+    resizeOb = new ResizeObserver(() => chart?.resize())
+    resizeOb.observe(chartEl.value)
+  }
   ;(async () => {
-    summary.value = await statsSummary()
+    try {
+      summary.value = (await statsSummary()) || {}
+    } catch { /* 拦截器已提示 */ }
     if (!alive.value) return
     await loadTrend()
-  })().catch(() => {})
+  })()
 })
-
-const alive = ref(true)
 
 onBeforeUnmount(() => {
   alive.value = false
-  window.removeEventListener('resize', onResize)
+  resizeOb?.disconnect()
+  resizeOb = null
   chart?.dispose()
   chart = null
 })
@@ -160,6 +182,19 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .chart-card { margin-top: 16px; }
+.chart-box {
+  position: relative;
+  height: 330px;
+}
+.chart { height: 100%; }
+.chart-empty {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .chart-head {
   display: flex;
   align-items: center;

@@ -4,11 +4,13 @@
 
     <el-card>
       <template #header>
-        版本列表
-        <span style="float: right">
-          <el-button type="success" size="small" @click="openEditorNew">在线编写</el-button>
-          <el-button type="primary" size="small" style="margin-left: 8px" @click="uploadDlg = true">上传新版本</el-button>
-        </span>
+        <div class="card-head">
+          <span>版本列表</span>
+          <span class="card-head-actions">
+            <el-button type="success" size="small" @click="openEditorNew">在线编写</el-button>
+            <el-button type="primary" size="small" @click="uploadDlg = true">上传新版本</el-button>
+          </span>
+        </div>
       </template>
       <el-table :data="versions" stripe>
         <el-table-column label="版本号" width="90">
@@ -29,7 +31,11 @@
           <template #default="{ row }">
             <el-button size="small" type="success" plain @click="openEditorVersion(row)">编辑</el-button>
             <el-button size="small" type="primary" @click="openPublish(row)">发布</el-button>
-            <el-button size="small" v-if="row.versionCode !== script.stableVersionCode" @click="doRollback(row)">
+            <el-button
+              size="small" v-if="row.versionCode !== script.stableVersionCode"
+              :loading="rollingBack === row.versionCode" :disabled="rollingBack !== null || pubSubmitting"
+              @click="doRollback(row)"
+            >
               回滚到此版
             </el-button>
           </template>
@@ -182,10 +188,10 @@
             >刷新设备</el-button>
           </div>
 
-          <!-- 控件检索视图 -->
-          <template v-if="inspectorMode === 'ui'">
+          <!-- 控件检索视图：v-show 保留实例，切到应用列表再切回不会重新抓屏、不丢开关状态 -->
+          <div v-show="inspectorMode === 'ui'">
             <UiInspector
-              v-if="inspectorDeviceId" :device-id="inspectorDeviceId"
+              v-if="inspectorDeviceId" ref="inspectorRef" :device-id="inspectorDeviceId"
               @select="inspectorNode = $event" @pick="inspectorPoint = $event"
             />
             <div v-else class="panel-empty">
@@ -206,10 +212,10 @@
               </div>
               <el-button size="small" type="primary" plain @click="insertPoint">坐标点击</el-button>
             </div>
-          </template>
+          </div>
 
           <!-- 应用列表视图 -->
-          <template v-else>
+          <div v-show="inspectorMode === 'apps'">
             <div style="display: flex; gap: 6px; margin-bottom: 8px">
               <el-input
                 v-model="appKw" placeholder="搜索应用名 / 包名" clearable size="small"
@@ -239,7 +245,7 @@
               </div>
               <el-button size="small" type="primary" plain @click="insertApp">打开APP</el-button>
             </div>
-          </template>
+          </div>
         </div>
       </div>
       <template #footer>
@@ -302,6 +308,7 @@ import UiInspector from '../components/UiInspector.vue'
 import ConfigForm from '../components/ConfigForm.vue'
 import { parseCode } from '../editor/blocks/parse'
 import { genCode } from '../editor/blocks/codegen'
+import { findMissingParam } from '../editor/blocks/blockDefs'
 import { SNIPPET_LABELS, snippetCode, snippetBlock, suggestSelector, appLaunchCode, appLaunchBlockOf, tapPointCode, tapPointBlockOf, type SnippetKind } from '../editor/snippets'
 import type { Block } from '../editor/blocks/types'
 
@@ -341,10 +348,32 @@ const showFlowToggle = computed(() => activeFile.value === 'main.js')
 const showConfigToggle = computed(() => activeFile.value === 'config.json')
 const langFor = (name: string) => (name.endsWith('.json') ? 'json' : name.endsWith('.js') ? 'javascript' : 'plaintext')
 
-/** 图形块有任何编辑就即时写回 main.js（注释与未识别代码以块形式保留，语义不丢失） */
+let flowInvalidWarned = false
+
+/** 图形块有任何编辑就即时写回 main.js（注释与未识别代码以块形式保留，语义不丢失）。
+ *  写回前先自检：条件表达式只填一半会让 main.js 非法，写坏之后就再也进不了图形模式。 */
 const syncFlowToCode = () => {
   const mf = editorFiles.value.find(f => f.name === 'main.js')
-  if (mf) mf.content = genCode(flowBlocks.value)
+  if (!mf) return
+  const code = genCode(flowBlocks.value)
+  if (parseCode(code).error) {
+    if (!flowInvalidWarned) {
+      flowInvalidWarned = true
+      ElMessage.warning('流程块生成的代码暂不合法（常见于条件表达式只填了一半），已保留上一版 main.js，请补全后继续')
+    }
+    return
+  }
+  flowInvalidWarned = false
+  mf.content = code
+}
+
+/** 必填参数留空会静默存出一个跑不通的版本（如 auto.launch("")），保存/调试前统一拦截 */
+const checkFlowParams = () => {
+  if (editorMode.value !== 'flow') return true
+  const missing = findMissingParam(flowBlocks.value)
+  if (!missing) return true
+  ElMessage.warning(`${missing}，请补全后再试`)
+  return false
 }
 
 watch(editorMode, mode => {
@@ -373,11 +402,26 @@ watch(configMode, mode => {
   }
 })
 
+/** 装载文件后决定 config.json 的初始模式。必须在这里校验：表单模式解析失败时会用
+ *  {name,version,entry} 三个字段覆盖整个文件，绝不能带着坏 JSON 挂载 ConfigForm。 */
+const applyConfigMode = () => {
+  const cf = editorFiles.value.find(f => f.name === 'config.json')
+  if (!cf) return
+  try {
+    JSON.parse(cf.content)
+    configMode.value = 'form'
+  } catch (e) {
+    configMode.value = 'code'
+    ElMessage.error(`config.json 不是合法 JSON，已切到代码模式：${(e as Error).message}`)
+  }
+}
+
 // ---------- 控件检索助手（编辑抽屉右侧面板） ----------
 const inspectorOpen = ref(false)
 const onlineDevices = ref<any[]>([])
 const inspectorDeviceId = ref<number | null>(null)
 const inspectorNode = ref<UiTreeNode | null>(null)
+const inspectorRef = ref<any>(null)
 const devicesLoading = ref(false)
 /** 面板视图：ui=控件检索（截图/树/取坐标），apps=应用列表（插「打开APP」） */
 const inspectorMode = ref<'ui' | 'apps'>('ui')
@@ -395,6 +439,11 @@ watch(inspectorDeviceId, () => {
   inspectorPoint.value = null
   appsList.value = []
   selectedApp.value = null
+})
+
+// v-show 隐藏期间容器宽度为 0，切回来要主动重绘，否则截图画布空白
+watch(inspectorMode, m => {
+  if (m === 'ui') nextTick(() => inspectorRef.value?.redraw?.())
 })
 
 const filteredApps = computed(() => {
@@ -511,6 +560,7 @@ const debugTaskId = ref<number | null>(null)
 const debugLogs = ref<{ level: string; text: string }[]>([])
 let debugLogSub: any = null
 let debugStatusSub: any = null
+let debugWatchdog: any = null
 
 const debugTaskName = () => `调试-${scriptId()}`
 
@@ -531,6 +581,24 @@ const pushLog = (level: string, text: string) => {
   })
 }
 
+/** 设备长时间不回状态帧时解除「运行中」锁定，否则运行按钮被永久 disabled，只能刷新页面 */
+const armDebugWatchdog = (ms = 20000) => {
+  if (debugWatchdog) clearTimeout(debugWatchdog)
+  debugWatchdog = setTimeout(() => {
+    debugWatchdog = null
+    if (!debugRunning.value) return
+    debugRunning.value = false
+    pushLog('WARN', '—— 超时未收到设备状态帧，已解除「运行中」锁定，可重新下发 ——')
+  }, ms)
+}
+
+const clearDebugWatchdog = () => {
+  if (debugWatchdog) {
+    clearTimeout(debugWatchdog)
+    debugWatchdog = null
+  }
+}
+
 /** 订阅设备日志（按 taskId 过滤）与任务状态；重复调用先退订旧订阅 */
 function subscribeDebug(taskId: number, deviceId: number) {
   connectStomp()
@@ -538,11 +606,17 @@ function subscribeDebug(taskId: number, deviceId: number) {
   debugStatusSub?.unsubscribe()
   debugLogSub = subscribe(`/topic/device/${deviceId}/logs`, (body: any) => {
     if (body?.taskId && taskId && body.taskId !== taskId) return
-    pushLog(body?.level || 'INFO', `[${fmtClock(body.logTime)}] ${body?.content || ''}`)
+    // 设备未带 logTime 时退回服务端接收时间，否则时间戳位置显示成空的 []
+    pushLog(body?.level || 'INFO', `[${fmtClock(body?.logTime ?? body?.recvTime)}] ${body?.content || ''}`)
   })
   debugStatusSub = subscribe(`/topic/task/${taskId}/status`, (body: any) => {
     pushLog('INFO', `—— 设备 ${body?.deviceId ?? ''} 状态：${body?.status ?? JSON.stringify(body)} ——`)
-    if (['SUCCESS', 'FAILED', 'STOPPED'].includes(body?.status)) debugRunning.value = false
+    if (['SUCCESS', 'FAILED', 'STOPPED'].includes(body?.status)) {
+      debugRunning.value = false
+      clearDebugWatchdog()
+    } else {
+      armDebugWatchdog()
+    }
   })
 }
 
@@ -552,9 +626,11 @@ const openDebug = async () => {
     debugDeviceId.value = inspectorDeviceId.value ?? onlineDevices.value[0]?.id ?? null
   }
   debugDlg.value = true
-  // 任务还在跑时重新打开调试台，恢复订阅继续看日志
+  // 任务还在跑时重新打开调试台，恢复订阅继续看日志；空闲时清掉上一轮日志避免新旧混杂
   if (debugRunning.value && debugTaskId.value && debugDeviceId.value) {
     subscribeDebug(debugTaskId.value, debugDeviceId.value)
+  } else if (!debugRunning.value) {
+    debugLogs.value = []
   }
 }
 
@@ -585,6 +661,10 @@ const debugRun = async () => {
   try {
     // 1. 当前编辑内容落为新版本，保证跑的就是眼前这份代码
     if (editorMode.value === 'flow') syncFlowToCode()
+    if (!checkFlowParams()) {
+      pushLog('WARN', '—— 流程块存在未填写的必填参数，已取消本次调试运行 ——')
+      return
+    }
     const files = editorFiles.value.filter(f => f.text).map(f => ({ name: f.name, content: f.content }))
     const versionCode = nextVersionCode()
     pushLog('INFO', `—— 正在保存当前编辑内容为 v${versionCode}… ——`)
@@ -596,6 +676,10 @@ const debugRun = async () => {
       files
     })
     editorBase.value = versionCode
+    // 该版本号已被本次调试占用：立刻刷新列表并顶掉抽屉里的「保存为版本」，
+    // 否则接着点「保存为新版本」必然撞上服务端的「该版本号已存在」
+    await load()
+    editorForm.versionCode = nextVersionCode()
 
     // 2. 复用/创建本脚本的调试任务（IMMEDIATE + 不重试），指向所选设备与新版本
     pushLog('INFO', '—— 准备调试任务… ——')
@@ -623,8 +707,8 @@ const debugRun = async () => {
     subscribeDebug(task.id, devId)
     await taskAction(task.id, 'start')
     debugRunning.value = true
+    armDebugWatchdog()
     pushLog('INFO', `—— 已下发到设备（任务 #${task.id}，v${versionCode}），等待日志… ——`)
-    await load()
   } catch { /* 拦截器已提示 */ } finally {
     debugStarting.value = false
   }
@@ -635,12 +719,15 @@ const debugStop = async () => {
   try {
     await taskAction(debugTaskId.value, 'stop')
     pushLog('INFO', '—— 已发送停止指令，等待设备退出… ——')
+    // 设备可能根本不回状态帧（进程被杀/掉线），给一个兜底解除「运行中」锁定
+    armDebugWatchdog(15000)
   } catch { /* 拦截器已提示 */ }
 }
 
 onUnmounted(() => {
   debugLogSub?.unsubscribe()
   debugStatusSub?.unsubscribe()
+  clearDebugWatchdog()
 })
 
 const nextVersionCode = () => Math.max(1, (versions.value[0]?.versionCode || 0) + 1)
@@ -659,7 +746,7 @@ const openEditorVersion = async (row: any) => {
     activeFile.value = 'main.js'
     editorMode.value = 'code'
     flowBlocks.value = []
-    configMode.value = 'form'
+    applyConfigMode()
     inspectorOpen.value = false
     inspectorMode.value = 'ui'
     inspectorPoint.value = null
@@ -696,7 +783,7 @@ const openEditorNew = async () => {
   activeFile.value = 'main.js'
   editorMode.value = 'code'
   flowBlocks.value = []
-  configMode.value = 'form'
+  applyConfigMode()
   inspectorOpen.value = false
   inspectorMode.value = 'ui'
   inspectorPoint.value = null
@@ -738,6 +825,7 @@ const saveEditor = async () => {
   if (editorSaving.value) return
   // 图形模式下块内容已在每次编辑时同步，这里兜底再同步一次（如空块列表生成空代码的场景）
   if (editorMode.value === 'flow') syncFlowToCode()
+  if (!checkFlowParams()) return
   const files = editorFiles.value.filter(f => f.text).map(f => ({ name: f.name, content: f.content }))
   editorSaving.value = true
   try {
@@ -759,15 +847,24 @@ const saveEditor = async () => {
 const load = async () => {
   const id = scriptId()
   if (!Number.isFinite(id)) return
-  const all: any[] = await listScripts()
-  script.value = all.find(s => s.id === id)
-  if (!script.value) {
-    ElMessage.error('脚本不存在或已被删除')
-    router.replace('/scripts')
-    return
-  }
-  versions.value = await listVersions(id)
-  records.value = await publishRecords(id)
+  try {
+    const all: any[] = await listScripts()
+    script.value = all.find(s => s.id === id)
+    if (!script.value) {
+      ElMessage.error('脚本不存在或已被删除')
+      router.replace('/scripts')
+      return
+    }
+    versions.value = await listVersions(id)
+    records.value = await publishRecords(id)
+  } catch { /* 拦截器已提示 */ }
+}
+
+// 分组单独加载：load 失败也不能让发布弹窗的分组下拉空掉
+const loadGroups = async () => {
+  try {
+    groups.value = (await listGroups()) || []
+  } catch { /* 拦截器已提示 */ }
 }
 
 // 路由参数变化时（前进/后退）组件被复用，需重新加载
@@ -775,8 +872,13 @@ watch(() => route.params.id, () => {
   if (route.path.startsWith('/scripts/')) load()
 })
 
+const groupName = (id: any) =>
+  groups.value.find((g: any) => String(g.id) === String(id))?.name || `分组 ${id}`
+
 const targetText = (row: any) =>
-  row.targetType === 'ALL' ? '全量' : row.targetType === 'PERCENT' ? `灰度 ${row.targetValue}%` : `分组 ${row.targetValue}`
+  row.targetType === 'ALL' ? '全量'
+    : row.targetType === 'PERCENT' ? `灰度 ${row.targetValue}%`
+      : groupName(row.targetValue)
 
 const resetUpload = () => {
   upForm.versionCode = Math.max(1, (versions.value[0]?.versionCode || 0) + 1)
@@ -808,6 +910,10 @@ const doUpload = async () => {
 
 const openPublish = (row: any) => {
   pubForm.versionCode = row.versionCode
+  // 不重置的话上一次的灰度比例/分组会带到下一个版本，容易误发
+  pubForm.targetType = 'ALL'
+  pubForm.percent = 20
+  pubForm.groupId = groups.value[0]?.id ?? undefined
   pubDlg.value = true
 }
 
@@ -829,31 +935,43 @@ const doPublish = async () => {
   }
 }
 
+const rollingBack = ref<number | null>(null)
+
 const doRollback = async (row: any) => {
   try {
     await ElMessageBox.confirm(`确认将稳定版本回滚到 v${row.versionCode}？（以全量方式重新发布旧版本）`, '回滚确认')
   } catch {
     return // 用户取消
   }
-  if (pubSubmitting.value) return
-  pubSubmitting.value = true
+  if (rollingBack.value !== null || pubSubmitting.value) return
+  rollingBack.value = row.versionCode
   try {
     await publishScript(scriptId(), { versionCode: row.versionCode, targetType: 'ALL' })
     ElMessage.success('已回滚')
-    load()
-  } finally {
-    pubSubmitting.value = false
+    await load()
+  } catch { /* 拦截器已提示 */ } finally {
+    rollingBack.value = null
   }
 }
 
 onMounted(async () => {
-  await load()
-  groups.value = await listGroups()
+  await Promise.all([load(), loadGroups()])
   resetUpload()
 })
 </script>
 
 <style scoped>
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.card-head-actions {
+  display: flex;
+  align-items: center;
+}
 .editor-layout {
   display: flex;
   gap: 12px;

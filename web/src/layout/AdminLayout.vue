@@ -9,7 +9,7 @@
           <el-breadcrumb-item :to="breadcrumbParent.path">{{ breadcrumbParent.title }}</el-breadcrumb-item>
           <el-breadcrumb-item>{{ $route.meta.title }}</el-breadcrumb-item>
         </el-breadcrumb>
-        <span class="page-title">{{ $route.meta.title }}</span>
+        <span v-else class="page-title">{{ $route.meta.title }}</span>
       </div>
 
       <el-dropdown @command="onCommand">
@@ -81,19 +81,25 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
   Odometer, Monitor, Grid, Files, List, Notebook, DataAnalysis, Key,
-  User, SwitchButton, Lock, ArrowDown, Fold, Expand
+  SwitchButton, Lock, ArrowDown, Fold, Expand
 } from '@element-plus/icons-vue'
 import { changePassword } from '../api'
-import { disconnectStomp } from '../ws/stomp'
+import { connectStomp, disconnectStomp } from '../ws/stomp'
 
 const route = useRoute()
 const router = useRouter()
-const collapsed = ref(false)
+// 窄屏初始即折叠，避免 216px 侧栏把内容区挤到溢出
+const collapsed = ref(typeof window !== 'undefined' && window.innerWidth < 900)
+
+// 登录态期间由布局独占这条连接：页面只 subscribe/unsubscribe，
+// 各自 disconnect 会在路由切换时掐掉新页面刚建立的连接（新页 setup 早于旧页 onUnmounted）
+onMounted(() => connectStomp())
+onUnmounted(() => disconnectStomp())
 
 const menus = [
   { path: '/dashboard', title: '仪表盘', icon: Odometer },
@@ -116,10 +122,13 @@ const adminName = computed(() => {
 })
 const adminInitial = computed(() => adminName.value.slice(0, 1).toUpperCase())
 
-const breadcrumbParent = computed(() =>
-  route.path.includes('/scripts/') ? { path: '/scripts', title: '脚本管理' } : { path: '/tasks', title: '任务管理' }
-)
-const isDetail = computed(() => route.path.includes('/scripts/') || route.path.includes('/tasks/'))
+const breadcrumbParent = computed(() => {
+  if (route.path.includes('/scripts/')) return { path: '/scripts', title: '脚本管理' }
+  if (route.path.startsWith('/devices/')) return { path: '/devices', title: '设备管理' }
+  return { path: '/tasks', title: '任务管理' }
+})
+const isDetail = computed(() =>
+  route.path.includes('/scripts/') || route.path.includes('/tasks/') || route.path.startsWith('/devices/'))
 // 详情页路由（/scripts/5 等）需映射回一级菜单，否则侧边栏无高亮
 const activeMenu = computed(() => '/' + (route.path.split('/')[1] || 'dashboard'))
 
@@ -146,6 +155,8 @@ const doChangePassword = async () => {
   pwdSubmitting.value = true
   try {
     await changePassword(pwdForm)
+  } catch {
+    return // 拦截器已提示（如原密码错误），后续登出逻辑不能执行
   } finally {
     pwdSubmitting.value = false
   }
@@ -196,7 +207,18 @@ const doChangePassword = async () => {
   transition: background 0.2s, color 0.2s;
 }
 .collapse-btn:hover { background: #f4f6fb; color: var(--rpa-primary); }
-.page-title { font-size: 15px; font-weight: 600; color: #1e2438; }
+.page-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e2438;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.crumb { min-width: 0; }
+
+@media (max-width: 768px) {
+  .crumb, .user-name { display: none; }
+}
 
 .user-chip {
   display: flex;

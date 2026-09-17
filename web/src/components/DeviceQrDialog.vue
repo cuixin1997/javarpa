@@ -4,8 +4,8 @@
     title="设备配置二维码"
     width="440px"
     :close-on-click-modal="false"
+    destroy-on-close
     @update:model-value="(v: boolean) => emit('update:visible', v)"
-    @open="regen"
   >
     <el-form label-width="90px">
       <el-form-item label="服务器地址">
@@ -14,7 +14,8 @@
     </el-form>
     <div class="qr-box">
       <img v-if="qrDataUrl" :src="qrDataUrl" alt="设备配置二维码" />
-      <el-skeleton v-else style="width: 260px; height: 260px; margin: 0 auto" />
+      <el-skeleton v-else-if="generating" style="width: 260px; height: 260px; margin: 0 auto" />
+      <el-empty v-else :description="qrError || '填写服务器地址后生成二维码'" :image-size="60" />
     </div>
     <div class="meta">
       <div>设备编号：<b>{{ deviceSn }}</b></div>
@@ -38,6 +39,8 @@ const emit = defineEmits<{ (e: 'update:visible', v: boolean): void }>()
 
 const serverUrl = ref('')
 const qrDataUrl = ref('')
+const qrError = ref('')
+const generating = ref(false)
 
 // 默认值猜一个设备可达地址：vite dev(5173) 下云端在 8080；生产同域直接用 origin。均可手改后重新出码
 function defaultServer() {
@@ -46,20 +49,40 @@ function defaultServer() {
 }
 
 async function regen() {
-  const payload = {
-    v: 1,
-    type: 'javarpa-device',
-    server: serverUrl.value.trim(),
-    deviceSn: props.deviceSn,
-    secret: props.secret
+  const server = serverUrl.value.trim()
+  if (!server) {
+    // 空地址出码会得到 App 无法使用的配置，宁可不出码并明确提示
+    qrDataUrl.value = ''
+    qrError.value = '请填写设备实际可访问的云端地址'
+    return
   }
-  qrDataUrl.value = await QRCode.toDataURL(JSON.stringify(payload), { width: 260, margin: 2 })
+  qrError.value = ''
+  generating.value = true
+  try {
+    qrDataUrl.value = await QRCode.toDataURL(JSON.stringify({
+      v: 1,
+      type: 'javarpa-device',
+      server,
+      deviceSn: props.deviceSn,
+      secret: props.secret
+    }), { width: 260, margin: 2 })
+  } catch {
+    qrDataUrl.value = ''
+    qrError.value = '二维码生成失败，请检查地址后重试'
+  } finally {
+    generating.value = false
+  }
 }
 
+// 只由 watch 驱动出码：原先 @open 与此处同时触发，每次打开会生成两次并竞争写 qrDataUrl
 watch(() => props.visible, v => {
   if (v) {
     if (!serverUrl.value) serverUrl.value = defaultServer()
     regen()
+  } else {
+    // 一次性密钥与二维码不应在关闭后继续留在 DOM 里
+    qrDataUrl.value = ''
+    qrError.value = ''
   }
 })
 </script>

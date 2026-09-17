@@ -4,13 +4,13 @@
       <span style="font-weight: 600; color: #1e2438">API Token</span>
       <span style="color: #9aa3b8; font-size: 13px">供外部系统调用 /open/v1 接口（请求头 X-API-Token）</span>
       <div class="toolbar-spacer" />
-      <el-button type="primary" plain :icon="Plus" @click="dlg = true">新建 Token</el-button>
+      <el-button type="primary" plain :icon="Plus" @click="openDlg">新建 Token</el-button>
     </div>
     <el-card class="table-card" shadow="never">
-      <el-table :data="rows" stripe>
+      <el-table v-loading="loading" :data="rows" stripe>
       <el-table-column prop="id" label="ID" width="60" />
-      <el-table-column prop="name" label="名称" />
-      <el-table-column prop="prefix" label="前缀" width="160" />
+      <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
+      <el-table-column prop="prefix" label="前缀" width="180" show-overflow-tooltip />
       <el-table-column label="状态" width="90">
         <template #default="{ row }">
           <el-tag :type="row.status === 1 ? 'success' : 'info'" size="small">{{ row.status === 1 ? '启用' : '禁用' }}</el-tag>
@@ -21,7 +21,11 @@
       </el-table-column>
       <el-table-column label="操作" width="120">
         <template #default="{ row }">
-          <el-button size="small" :type="row.status === 1 ? 'warning' : 'success'" @click="toggle(row)">
+          <el-button
+            size="small" :type="row.status === 1 ? 'warning' : 'success'"
+            :loading="togglingId === row.id" :disabled="togglingId !== null && togglingId !== row.id"
+            @click="toggle(row)"
+          >
             {{ row.status === 1 ? '禁用' : '启用' }}
           </el-button>
         </template>
@@ -51,8 +55,23 @@ const rows = ref<any[]>([])
 const dlg = ref(false)
 const name = ref('')
 const submitting = ref(false)
+const loading = ref(false)
+/** 正在切换状态的 Token：连点两次会立刻把状态改回去，必须锁住 */
+const togglingId = ref<number | null>(null)
 
-const load = async () => (rows.value = await listTokens())
+const load = async () => {
+  loading.value = true
+  try {
+    rows.value = (await listTokens()) || []
+  } catch { /* 拦截器已提示 */ } finally {
+    loading.value = false
+  }
+}
+
+const openDlg = () => {
+  name.value = '' // 不重置会残留上一次的名称，直接点创建就重复建出同名 Token
+  dlg.value = true
+}
 
 const doCreate = async () => {
   if (!name.value.trim()) return ElMessage.warning('请填写 Token 名称')
@@ -61,6 +80,8 @@ const doCreate = async () => {
   let data: any
   try {
     data = await createToken({ name: name.value })
+  } catch {
+    return // 拦截器已提示
   } finally {
     submitting.value = false
   }
@@ -72,12 +93,20 @@ const doCreate = async () => {
       '创建成功'
     )
   } catch { /* 用户关闭弹窗 */ }
-  load()
+  await load()
 }
 
 const toggle = async (row: any) => {
-  await setTokenStatus(row.id, row.status === 1 ? 0 : 1)
-  load()
+  if (togglingId.value !== null) return
+  togglingId.value = row.id
+  const next = row.status === 1 ? 0 : 1
+  try {
+    await setTokenStatus(row.id, next)
+    ElMessage.success(next === 1 ? '已启用' : '已禁用')
+    await load()
+  } catch { /* 拦截器已提示 */ } finally {
+    togglingId.value = null
+  }
 }
 
 onMounted(load)

@@ -1,19 +1,26 @@
 <template>
-  <el-form ref="formRef" :model="form" :rules="rules" label-width="90px" class="config-form">
-    <el-form-item label="脚本名称" prop="name">
-      <el-input v-model="form.name" placeholder="如 demo-calculator" @change="emitChange" />
-      <div class="field-hint">脚本的业务名称，仅作展示标识</div>
-    </el-form-item>
-    <el-form-item label="版本号" prop="version">
-      <el-input v-model="form.version" placeholder="如 1.0.0" @change="emitChange" />
-      <div class="field-hint">语义化版本，仅作展示；云端发布/回滚以版本号(versionCode)为准</div>
-    </el-form-item>
-    <el-form-item label="入口文件" prop="entry">
-      <el-input v-model="form.entry" placeholder="main.js" @change="emitChange" />
-      <div class="field-hint">设备端固定读取 main.js，保持默认即可</div>
-    </el-form-item>
-    <div class="extra-hint">以上字段实时写入 config.json；切换到「代码模式」可编辑完整 JSON。</div>
-  </el-form>
+  <div class="config-form">
+    <el-alert
+      v-if="parseError" type="error" :closable="false" show-icon style="margin-bottom: 12px"
+      :title="`config.json 不是合法 JSON，表单模式已锁定（${parseError}）`"
+      description="请切换到「代码模式」修正后再编辑，否则保存会丢失原有配置字段。"
+    />
+    <el-form ref="formRef" :model="form" :rules="rules" :disabled="!!parseError" label-width="90px">
+      <el-form-item label="脚本名称" prop="name">
+        <el-input v-model="form.name" placeholder="如 demo-calculator" @change="emitChange" />
+        <div class="field-hint">脚本的业务名称，仅作展示标识</div>
+      </el-form-item>
+      <el-form-item label="版本号" prop="version">
+        <el-input v-model="form.version" placeholder="如 1.0.0" @change="emitChange" />
+        <div class="field-hint">语义化版本，仅作展示；云端发布/回滚以版本号(versionCode)为准</div>
+      </el-form-item>
+      <el-form-item label="入口文件" prop="entry">
+        <el-input v-model="form.entry" placeholder="main.js" @change="emitChange" />
+        <div class="field-hint">设备端固定读取 main.js，保持默认即可</div>
+      </el-form-item>
+      <div class="extra-hint">以上字段实时写入 config.json；切换到「代码模式」可编辑完整 JSON。</div>
+    </el-form>
+  </div>
 </template>
 
 <!--
@@ -23,6 +30,7 @@
 -->
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 
 const props = defineProps<{ modelValue: string }>()
 const emit = defineEmits<{ (e: 'update:modelValue', v: string): void }>()
@@ -38,17 +46,22 @@ const rules = {
 // 原始解析结果：保留 name/version/entry 之外的未知字段，回写时展开
 let raw: Record<string, any> = {}
 let lastEmitted = ''
+/** 解析失败原因：非空时表单只读，禁止回写覆盖原文件 */
+const parseError = ref('')
 
 const str = (v: any) => (typeof v === 'string' ? v : v == null ? '' : String(v))
 
 function loadFrom(text: string) {
   try {
-    raw = JSON.parse(text)
+    const obj = JSON.parse(text)
+    raw = obj && typeof obj === 'object' ? obj : {}
+    parseError.value = ''
     form.name = str(raw.name)
     form.version = str(raw.version)
     form.entry = str(raw.entry) || 'main.js'
-  } catch {
-    // 父组件保证仅在合法 JSON 时挂载本组件，这里兜底保持当前表单
+  } catch (e) {
+    // 此时 raw 里是上一个文件的内容，继续 emit 会把它写进当前文件，必须锁死表单
+    parseError.value = (e as Error).message
   }
 }
 loadFrom(props.modelValue)
@@ -59,8 +72,13 @@ watch(() => props.modelValue, v => {
 })
 
 async function emitChange() {
+  if (parseError.value) return
   const valid = await Promise.resolve(formRef.value?.validate()).then(() => true).catch(() => false)
-  if (!valid) return
+  if (!valid) {
+    // 静默 return 会让表单显示新值而 config.json 仍是旧值，两边长期分叉且毫无提示
+    ElMessage.warning('请先补全必填项，config.json 暂未更新')
+    return
+  }
   const obj: Record<string, any> = {
     ...raw,
     name: form.name.trim(),

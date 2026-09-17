@@ -61,25 +61,33 @@ const route = useRoute()
 const form = reactive({ username: 'admin', password: '' })
 const loading = ref(false)
 
+/** 回到被踢出前的页面；仅接受站内路径，防 //evil.com 形式的开放重定向。
+ *  query 参数重复出现时 vue-router 给的是数组，必须先归一化，否则 startsWith 抛错被静默吞掉 */
+const safeRedirect = () => {
+  const q = route.query.redirect
+  const raw = Array.isArray(q) ? q[0] : q
+  if (typeof raw !== 'string' || !raw) return '/dashboard'
+  return raw.startsWith('/') && !raw.startsWith('//') ? raw : '/dashboard'
+}
+
 const doLogin = async () => {
+  if (loading.value) return // 回车不像按钮那样被 loading 禁用，需要单独挡住重复提交
   if (!form.username || !form.password) {
     ElMessage.warning('请输入用户名和密码')
     return
   }
   loading.value = true
+  let data: any
   try {
-    const data: any = await login(form)
-    localStorage.setItem('token', data.token)
-    localStorage.setItem('admin', JSON.stringify(data.admin))
-    // 回到被踢出前的页面；仅接受站内路径，防 //evil.com 形式的开放重定向
-    const raw = (route.query.redirect as string) || '/dashboard'
-    const redirect = raw.startsWith('/') && !raw.startsWith('//') ? raw : '/dashboard'
-    router.push(redirect)
+    data = await login(form)
   } catch {
-    // 拦截器已提示错误
+    return // 拦截器已提示错误
   } finally {
     loading.value = false
   }
+  localStorage.setItem('token', data.token)
+  localStorage.setItem('admin', JSON.stringify(data.admin))
+  router.push(safeRedirect())
 }
 </script>
 
@@ -141,13 +149,17 @@ const doLogin = async () => {
 
 .login-right {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--rpa-bg);
+  padding: 24px;
+  box-sizing: border-box;
 }
 .login-card {
-  width: 400px;
+  width: 100%;
+  max-width: 400px;
   padding: 12px 8px;
   border-radius: 18px;
 }

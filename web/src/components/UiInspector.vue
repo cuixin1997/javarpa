@@ -74,7 +74,7 @@
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { deviceDebugTrigger, deviceDebugLatest, type UiTreeNode, type DebugLatest, type DumpData, type CaptureData } from '../api'
-import { connectStomp, subscribe, disconnectStomp } from '../ws/stomp'
+import { connectStomp, subscribe } from '../ws/stomp'
 
 interface NormNode extends UiTreeNode {
   key: string
@@ -90,7 +90,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'select', node: UiTreeNode | null): void
-  (e: 'pick', point: { x: number; y: number }): void
+  (e: 'pick', point: { x: number; y: number } | null): void
 }>()
 
 const treeData = ref<NormNode[]>([])
@@ -103,6 +103,10 @@ const pickPoint = ref(false)
 const hasShot = ref(false)
 /** 取坐标模式下点选的屏幕坐标（画十字标记；新截图到达后失效） */
 const picked = ref<{ x: number; y: number } | null>(null)
+
+// 遥控点击与取坐标都靠点击截图触发，同时开启时取坐标会被静默忽略，故互斥
+watch(remoteTap, on => { if (on) pickPoint.value = false })
+watch(pickPoint, on => { if (on) remoteTap.value = false })
 /** 触发调试指令后设备未回传新数据时的提示（典型原因：无障碍服务未开启） */
 const warn = ref('')
 let waitTimer: any = null
@@ -165,14 +169,22 @@ function applyDump(data: DumpData, ts: number) {
 
 /* ---------------- 截图与叠加 ---------------- */
 
+let captureSeq = 0
+
 function applyCapture(data: CaptureData, ts: number) {
+  const seq = ++captureSeq
   captureAt = ts
   screenW = data.width
   screenH = data.height
-  // 画面已变化，旧坐标点失效
-  picked.value = null
+  // 画面已变化，旧坐标点失效；同步撤下父组件的「插入坐标点击」按钮条
+  if (picked.value) {
+    picked.value = null
+    emit('pick', null)
+  }
   const image = new Image()
   image.onload = () => {
+    // 连抓两次时旧图解码可能后到，只认最新一次
+    if (seq !== captureSeq) return
     img = image
     hasShot.value = true
     draw()
@@ -186,6 +198,8 @@ function draw() {
   const wrap = shotWrap.value
   if (!canvas || !wrap || !img || !screenW || !screenH) return
   const w = wrap.clientWidth
+  // 面板被 v-show 隐藏或抽屉未展开时宽度为 0，此时绘制会把画布清零
+  if (!w) return
   const h = Math.round((w * screenH) / screenW)
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w
@@ -353,7 +367,7 @@ async function refresh() {
   }, 6000)
 }
 
-defineExpose({ refresh })
+defineExpose({ refresh, redraw: draw })
 
 watch(autoRefresh, on => {
   if (timer) {
@@ -397,7 +411,7 @@ onUnmounted(() => {
   if (remoteTimer) clearTimeout(remoteTimer)
   if (waitTimer) clearTimeout(waitTimer)
   window.removeEventListener('resize', onResize)
-  disconnectStomp()
+  // 只退订自己这条：全局连接由页面/布局层管理，子组件拆连接会连带杀掉调试台的日志订阅
 })
 </script>
 
